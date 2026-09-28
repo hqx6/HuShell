@@ -4,6 +4,10 @@ HuShell 是面向 macOS 的原生 SSH / SFTP 工作台。
 
 **改版自 FinalShell 的使用体验与功能布局，使用 SwiftUI / AppKit 独立实现。** 项目参考 FinalShell 的多连接终端、主机监控和远端文件管理交互，并采用适合 macOS 的简约界面与玻璃材质；此说明指功能和界面参考关系，不表示本项目使用了 FinalShell 的应用源代码。
 
+## 界面预览
+
+![HuShell 多标签终端、主机信息与分栏文件管理](docs/images/hushell-workspace.png)
+
 ## 功能
 
 - **多标签 SSH 终端**：支持用户名 / 密码、SSH Agent 和私钥；标签右键可重连、复制、关闭。
