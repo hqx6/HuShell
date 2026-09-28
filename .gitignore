@@ -1,0 +1,13 @@
+.build/
+build/
+.DS_Store
+.swiftpm/
+.env
+.env.*
+connections.json
+groups.json
+recent-connections.json
+credentials.vault
+credentials.key
+*.pem
+*.key

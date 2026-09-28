@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    html, body, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0e1b25; }
+    #terminal { box-sizing: border-box; padding: 10px 11px; }
+    .xterm-viewport { scrollbar-width: thin; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script>
+    const terminal = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: 'SFMono-Regular, Menlo, monospace',
+      fontSize: 12.5,
+      lineHeight: 1.28,
+      scrollback: 5000,
+      allowTransparency: true,
+      theme: {
+        background: '#0e1b25', foreground: '#d9e8eb', cursor: '#78d6c4',
+        selectionBackground: '#386071', black: '#172834', red: '#fa7e83',
+        green: '#78d6a4', yellow: '#ffd187', blue: '#8cbef2', magenta: '#c7a8f5',
+        cyan: '#79d5de', white: '#eff5f4'
+      }
+    });
+    const fit = new FitAddon.FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(document.getElementById('terminal'));
+    terminal.onData(data => window.webkit.messageHandlers.input.postMessage(data));
+    terminal.onResize(size => window.webkit.messageHandlers.resize.postMessage(size));
+    window.huAppend = text => terminal.write(text);
+    window.huClear = () => terminal.reset();
+    const observer = new ResizeObserver(() => fit.fit());
+    observer.observe(document.getElementById('terminal'));
+    setTimeout(() => fit.fit(), 30);
+    document.addEventListener('mousedown', () => terminal.focus());
+  </script>
+</body>
+</html>
