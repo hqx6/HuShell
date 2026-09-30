@@ -55,6 +55,7 @@ private struct TitlebarTabAccessory<Content: View, Controls: View>: NSViewRepres
     let leadingX: CGFloat
     let windowWidth: CGFloat
     let tabWidth: CGFloat
+    let stateSignature: [String]
     let content: Content
     let controls: Controls
 
@@ -68,7 +69,8 @@ private struct TitlebarTabAccessory<Content: View, Controls: View>: NSViewRepres
     }
     func updateNSView(_ view: AnchorView, context: Context) {
         context.coordinator.update(leadingX: leadingX, windowWidth: windowWidth,
-                                   tabWidth: tabWidth, content: content, controls: controls)
+                                   tabWidth: tabWidth, stateSignature: stateSignature,
+                                   content: content, controls: controls)
         if let window = view.window { context.coordinator.attach(to: window) }
     }
     static func dismantleNSView(_ view: AnchorView, coordinator: Coordinator) {
@@ -84,14 +86,19 @@ private struct TitlebarTabAccessory<Content: View, Controls: View>: NSViewRepres
     }
 
     final class Coordinator {
+        private final class ClickThroughHostingView: NSHostingView<AnyView> {
+            override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        }
+
         private let accessory = NSTitlebarAccessoryViewController()
-        private let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        private let hosting = ClickThroughHostingView(rootView: AnyView(EmptyView()))
         private let trailingAccessory = NSTitlebarAccessoryViewController()
-        private let trailingHosting = NSHostingView(rootView: AnyView(EmptyView()))
+        private let trailingHosting = ClickThroughHostingView(rootView: AnyView(EmptyView()))
         private weak var window: NSWindow?
         private var leadingX: CGFloat = 0
         private var windowWidth: CGFloat = 960
         private var tabWidth: CGFloat = 150
+        private var stateSignature: [String] = []
         private var content: AnyView = AnyView(EmptyView())
         private var controls: AnyView = AnyView(EmptyView())
 
@@ -114,10 +121,15 @@ private struct TitlebarTabAccessory<Content: View, Controls: View>: NSViewRepres
             refresh()
             DispatchQueue.main.async { [weak self] in self?.refresh() }
         }
-        func update(leadingX: CGFloat, windowWidth: CGFloat, tabWidth: CGFloat, content: Content, controls: Controls) {
+        func update(leadingX: CGFloat, windowWidth: CGFloat, tabWidth: CGFloat,
+                    stateSignature: [String], content: Content, controls: Controls) {
+            let changed = self.stateSignature != stateSignature || abs(self.leadingX - leadingX) > 0.5
+                || abs(self.windowWidth - windowWidth) > 0.5 || abs(self.tabWidth - tabWidth) > 0.5
+            guard changed else { return }
             self.leadingX = leadingX
             self.windowWidth = windowWidth
             self.tabWidth = tabWidth
+            self.stateSignature = stateSignature
             self.content = AnyView(content)
             self.controls = AnyView(controls)
             refresh()
@@ -195,6 +207,15 @@ struct WorkspaceView: View {
         } + CGFloat(max(0, tabs.count - 1)) * 5
     }
     private var tabStripWidth: CGFloat { min(680, tabButtonWidth + 36) }
+    private var titlebarSignature: [String] {
+        tabs.map { item in
+            switch item {
+            case .library(let id): return "library:\(id)"
+            case .connection(let tab): return "connection:\(tab.id):\(tab.connected)"
+            }
+        } + ["selected:\(selectedItem?.id.uuidString ?? "")", "sidebar:\(showsSidebar)",
+             "files:\(showsFiles)", "position:\(filePanelPosition.rawValue)"]
+    }
 
     var body: some View {
         Group {
@@ -221,7 +242,8 @@ struct WorkspaceView: View {
         .background(Color(nsColor: .windowBackgroundColor), ignoresSafeAreaEdges: [])
         .background {
             TitlebarTabAccessory(leadingX: mainLeadingX, windowWidth: windowWidth,
-                                 tabWidth: max(tabStripWidth, measuredTabStripWidth), content: tabStrip, controls: windowControls)
+                                 tabWidth: max(tabStripWidth, measuredTabStripWidth),
+                                 stateSignature: titlebarSignature, content: tabStrip, controls: windowControls)
                 .frame(width: 1, height: 1)
         }
         .focusedSceneValue(\.workspaceMenuActions, WorkspaceMenuActions(
@@ -289,27 +311,17 @@ struct WorkspaceView: View {
                 .frame(width: 28, height: 28)
                 .modifier(GlassSurface(radius: 8))
 
-                Menu {
-                    Button {
-                        filePanelPosition = .bottom
+                Image(systemName: "slider.horizontal.3")
+                .frame(width: 28, height: 28)
+                .overlay {
+                    TitlebarLayoutMenu(selected: filePanelPosition, enabled: selectedTab != nil) { position in
+                        filePanelPosition = position
                         showsFiles = true
-                    } label: {
-                        Label("文件栏在底部", systemImage: filePanelPosition == .bottom ? "checkmark" : "rectangle.bottomthird.inset.filled")
                     }
-                    Button {
-                        filePanelPosition = .right
-                        showsFiles = true
-                    } label: {
-                        Label("文件栏在右侧", systemImage: filePanelPosition == .right ? "checkmark" : "sidebar.right")
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
                 }
                 .help("布局设置")
                 .accessibilityLabel("布局设置")
-                .disabled(selectedTab == nil)
-                .menuIndicator(.hidden)
-                .frame(width: 28, height: 28)
+                .foregroundStyle(selectedTab == nil ? Color.secondary.opacity(0.4) : Color.primary)
                 .modifier(GlassSurface(radius: 8))
             }
             .buttonStyle(.plain)
