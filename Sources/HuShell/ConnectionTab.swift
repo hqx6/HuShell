@@ -18,11 +18,25 @@ import Foundation
     var onConnect: (() -> Void)?
     private var generation = 0
     private var statsLoading = false
+    @Published private(set) var loadingDirectories: Set<String> = []
+    @Published private(set) var directoryErrors: [String: String] = [:]
+    private var usesColumns = false
+    private struct CachedDirectory {
+        let files: [RemoteFile]
+        let date: Date
+    }
+    private var directoryCache: [String: CachedDirectory] = [:]
+    private var directoryRequests: [String: UUID] = [:]
+    private let directoryLoader: @Sendable (ConnectionProfile, String) async throws -> [RemoteFile]
     private var homeDirectory = "/"
 
-    init(profile: ConnectionProfile, transferCenter: TransferCenter) {
+    init(profile: ConnectionProfile, transferCenter: TransferCenter,
+         directoryLoader: @escaping @Sendable (ConnectionProfile, String) async throws -> [RemoteFile] = { profile, path in
+             try await Task.detached { try SSHService.listDirectory(profile: profile, path: path) }.value
+         }) {
         self.profile = profile
         self.transferCenter = transferCenter
+        self.directoryLoader = directoryLoader
     }
 
     func connect() {
@@ -77,6 +91,10 @@ import Foundation
 
     func disconnect() {
         generation += 1
+        directoryRequests.removeAll()
+        directoryCache.removeAll()
+        loadingDirectories.removeAll()
+        directoryErrors.removeAll()
         statsLoading = false
         terminal.stop()
         connected = false
@@ -104,25 +122,58 @@ import Foundation
 
     func loadFiles() {
         guard connected else { return }
-        let profile = profile
-        let path = directory
+        // Explicit refresh and file mutations must not reuse stale ancestor listings.
+        directoryCache.removeAll()
+        requestDirectory(directory, force: true)
+    }
+
+    private func requestDirectory(_ path: String, force: Bool = false) {
+        guard connected else { return }
+        if !force {
+            if directoryRequests[path] != nil { return }
+            if let cached = directoryCache[path], Date().timeIntervalSince(cached.date) < 30 { return }
+        }
+        let request = UUID()
+        directoryRequests[path] = request
+        loadingDirectories.insert(path)
+        directoryErrors[path] = nil
+        busy = loadingDirectories.contains(directory)
         let generation = generation
-        busy = true
+        let profile = profile
+        let loader = directoryLoader
         Task { [weak self] in
-            let result = await Task.detached { Result { try SSHService.listDirectory(profile: profile, path: path) } }.value
-            guard let self, self.generation == generation, self.directory == path else { return }
-            self.busy = false
+            let result: Result<[RemoteFile], Error>
+            do { result = .success(try await loader(profile, path)) }
+            catch { result = .failure(error) }
+            guard let self, self.generation == generation,
+                  self.directoryRequests[path] == request else { return }
+            self.directoryRequests[path] = nil
+            self.loadingDirectories.remove(path)
+            self.busy = self.loadingDirectories.contains(self.directory)
             switch result {
             case .success(let value):
-                self.files = value
-                self.selectedFile = nil
+                self.directoryCache[path] = CachedDirectory(files: value, date: Date())
+                if self.directoryCache.count > 64,
+                   let oldest = self.directoryCache.min(by: { $0.value.date < $1.value.date })?.key {
+                    self.directoryCache[oldest] = nil
+                }
+                if self.directory == path {
+                    self.files = value
+                    if let selected = self.selectedFile, !value.contains(where: { $0.name == selected }) {
+                        self.selectedFile = nil
+                    }
+                }
                 if let index = self.columns.firstIndex(where: { $0.path == path }) {
                     self.columns[index].files = value
                 }
-            case .failure(let error): self.errorMessage = error.localizedDescription
+            case .failure(let error):
+                self.directoryErrors[path] = error.localizedDescription
+                if self.directory == path { self.errorMessage = error.localizedDescription }
             }
         }
     }
+
+    func retryDirectory(_ path: String) { requestDirectory(path, force: true) }
 
     private func loadHomeDirectory() {
         let profile = profile
@@ -150,35 +201,50 @@ import Foundation
         guard let path = RemotePath.resolved(input, relativeTo: directory, home: homeDirectory) else {
             errorMessage = "请输入有效的文件夹路径"; return
         }
-        let profile = profile
-        let generation = generation
-        busy = true
-        Task { [weak self] in
-            let result = await Task.detached { Result { try SSHService.listDirectory(profile: profile, path: path) } }.value
-            guard let self, self.generation == generation else { return }
-            self.busy = false
-            switch result {
-            case .success(let files):
-                self.directory = path
-                self.files = files
-                self.selectedFile = nil
-                self.columns = []
-            case .failure(let error): self.errorMessage = error.localizedDescription
-            }
+        if path == directory {
+            if usesColumns { rebuildColumns() }
+            requestDirectory(path)
+            return
         }
+        // Change the visible path immediately; SSH completion only supplies its contents.
+        directory = path
+        files = directoryCache[path]?.files ?? columns.first(where: { $0.path == path })?.files ?? []
+        selectedFile = nil
+        if usesColumns { rebuildColumns() }
+        else { columns = [] }
+        busy = loadingDirectories.contains(path)
+        requestDirectory(path)
+    }
+
+    func setColumnMode(_ enabled: Bool) {
+        usesColumns = enabled
+        if enabled { showColumns() }
+        else { columns = [] }
     }
 
     func showColumns() {
-        if columns.isEmpty { columns = [RemoteColumn(path: directory, files: files, selectedName: nil)] }
+        usesColumns = true
+        if directoryCache[directory] == nil && !files.isEmpty {
+            directoryCache[directory] = CachedDirectory(files: files, date: Date())
+        }
+        rebuildColumns()
+    }
+
+    private func rebuildColumns() {
+        let crumbs = RemotePath.breadcrumbs(directory)
+        let previous = columns
+        columns = crumbs.enumerated().map { index, crumb in
+            RemoteColumn(path: crumb.path,
+                         files: directoryCache[crumb.path]?.files
+                            ?? (crumb.path == directory ? files : previous.first(where: { $0.path == crumb.path })?.files ?? []),
+                         selectedName: index + 1 < crumbs.count ? crumbs[index + 1].name : selectedFile)
+        }
+        for crumb in crumbs { requestDirectory(crumb.path) }
     }
 
     func openColumnFolder(_ file: RemoteFile, at index: Int) {
         guard file.isDirectory, columns.indices.contains(index) else { return }
-        columns = Array(columns.prefix(index + 1))
-        columns[index].selectedName = file.name
-        directory = RemotePath.joined(columns[index].path, file.name)
-        columns.append(RemoteColumn(path: directory, files: [], selectedName: nil))
-        loadFiles()
+        goToDirectory(RemotePath.joined(columns[index].path, file.name))
     }
 
     func selectColumnFile(_ file: RemoteFile, at index: Int) {
@@ -188,6 +254,7 @@ import Foundation
         directory = columns[index].path
         files = columns[index].files
         selectedFile = file.name
+        busy = loadingDirectories.contains(directory)
     }
 
     func upload(_ urls: [URL]) {

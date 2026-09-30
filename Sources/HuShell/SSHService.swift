@@ -134,6 +134,13 @@ enum SSHService {
     }
 
     static func listDirectory(profile: ConnectionProfile, path: String) throws -> [RemoteFile] {
+        // GNU ls exposes seconds. SFTP's human-readable listing only exposes minutes.
+        // Retain SFTP for servers without a compatible remote shell or GNU ls.
+        let command = "cd " + shellQuote(path)
+            + " && LC_ALL=C ls -la --color=never --time-style='+%Y-%m-%d %H:%M:%S' -- ."
+        if let result = try? runRemote(profile: profile, command: command) {
+            return try parseListing(result)
+        }
         let result = try sftp(profile: profile, command: "cd " + sftpQuote(path) + "\nls -la .")
         return try parseListing(result)
     }
@@ -149,7 +156,7 @@ enum SSHService {
     }
 
     static func parseListing(_ result: String) throws -> [RemoteFile] {
-        let pattern = #"^([dlcbps-][rwxstST-]{9}[+@.]?)\s+\S+\s+\S+\s+\S+\s+(\d+)\s+(\S+\s+\S+\s+\S+)\s+(.+)$"#
+        let pattern = #"^([dlcbps-][rwxstST-]{9}[+@.]?)\s+\S+\s+\S+\s+\S+\s+(\d+)\s+((?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})|(?:\S+\s+\S+\s+\S+))\s+(.+)$"#
         let regex = try NSRegularExpression(pattern: pattern)
         return result.split(separator: "\n").compactMap { line in
             let value = String(line)
@@ -163,7 +170,7 @@ enum SSHService {
             let name = String(fullName.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
             guard name != ".", name != ".." else { return nil }
             return RemoteFile(name: name, isDirectory: group(1).hasPrefix("d"),
-                              size: group(2), modified: group(3), permissions: group(1))
+                              size: group(2), modified: RemoteFileDate.normalized(group(3)), permissions: group(1))
         }.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending

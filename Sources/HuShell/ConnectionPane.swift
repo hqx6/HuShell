@@ -22,6 +22,7 @@ struct ConnectionPane: View {
     @State private var showsNewFolder = false
     @State private var newFolderName = ""
     @State private var browserMode: FileBrowserMode = .list
+    @State private var fileSort = RemoteFileSort()
     @State private var showsTransfers = false
     @State private var isDropTargeted = false
     @State private var editingPath = false
@@ -122,14 +123,15 @@ struct ConnectionPane: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
-                        ForEach(Array(RemotePath.breadcrumbs(tab.directory).enumerated()), id: \.offset) { _, crumb in
+                        ForEach(RemotePath.breadcrumbs(tab.directory), id: \.path) { crumb in
                             Text(crumb.name)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(crumb.path == tab.directory ? Color.primary : Color.accentColor)
                                 .padding(.horizontal, 3).padding(.vertical, 4)
                                 .contentShape(Rectangle())
-                                .onTapGesture(count: 2) { beginPathEdit() }
-                                .onTapGesture { tab.goToDirectory(crumb.path) }
+                                .overlay(FileRowClickObserver(onSelect: {
+                                    tab.goToDirectory(crumb.path)
+                                }, onDoubleClick: { beginPathEdit() }))
                             if crumb.path != tab.directory {
                                 Image(systemName: "chevron.right").font(.system(size: 8)).foregroundStyle(.tertiary)
                             }
@@ -166,6 +168,22 @@ struct ConnectionPane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 104)
                 .modifier(GlassSurface(radius: 9))
                 .help("切换分栏或列表视图")
+                Menu {
+                    ForEach(RemoteFileSortKey.allCases, id: \.self) { key in
+                        Button {
+                            fileSort.select(key)
+                        } label: {
+                            if fileSort.key == key {
+                                Label(key.rawValue, systemImage: fileSort.ascending ? "arrow.up" : "arrow.down")
+                            } else { Text(key.rawValue) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .modifier(GlassSurface(radius: 8))
+                .help("排序：\(fileSort.key.rawValue)\(fileSort.ascending ? "升序" : "降序")")
                 Button { showsTransfers = true } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.up.arrow.down.circle")
@@ -192,7 +210,7 @@ struct ConnectionPane: View {
             if browserMode == .columns { columnBrowser }
             else { listBrowser }
         }
-        .onChange(of: browserMode) { _, mode in if mode == .columns { tab.showColumns() } }
+        .onChange(of: browserMode) { _, mode in tab.setColumnMode(mode == .columns) }
         .onChange(of: tab.connected) { _, connected in
             if connected && browserMode == .columns { tab.showColumns() }
         }
@@ -215,9 +233,9 @@ struct ConnectionPane: View {
     private var listBrowser: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("名称").frame(maxWidth: .infinity, alignment: .leading)
-                Text("大小").frame(width: 85, alignment: .trailing)
-                Text("修改时间").frame(width: 130, alignment: .trailing)
+                sortHeader(.name).frame(maxWidth: .infinity, alignment: .leading)
+                sortHeader(.size).frame(width: 85, alignment: .trailing)
+                sortHeader(.modified).frame(width: 150, alignment: .trailing)
                 Text("权限").frame(width: 96, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
@@ -228,7 +246,7 @@ struct ConnectionPane: View {
                     if tab.directory != "/" && tab.directory != "." {
                         fileRow(RemoteFile(name: "..", isDirectory: true, size: "", modified: "", permissions: ""))
                     }
-                    ForEach(tab.files) { file in fileRow(file) }
+                    ForEach(fileSort.files(tab.files)) { file in fileRow(file) }
                     if tab.connected && tab.files.isEmpty && !tab.busy {
                         ContentUnavailableView("目录为空", systemImage: "folder", description: Text("可以将文件拖到此处上传"))
                             .frame(maxWidth: .infinity, minHeight: 130)
@@ -249,7 +267,16 @@ struct ConnectionPane: View {
                     ForEach(Array(tab.columns.enumerated()), id: \.element.id) { index, column in
                         ScrollView {
                             LazyVStack(spacing: 1) {
-                                ForEach(column.files) { file in
+                                if tab.loadingDirectories.contains(column.path) && column.files.isEmpty {
+                                    ProgressView("正在加载…").controlSize(.small)
+                                        .frame(maxWidth: .infinity).padding(.vertical, 20)
+                                } else if let error = tab.directoryErrors[column.path] {
+                                    Text(error).font(.caption).foregroundStyle(.secondary).padding(8)
+                                    Button("重试") { tab.retryDirectory(column.path) }.buttonStyle(.borderless)
+                                } else if column.files.isEmpty {
+                                    Text("目录为空").font(.caption).foregroundStyle(.secondary).padding(.vertical, 20)
+                                }
+                                ForEach(fileSort.files(column.files)) { file in
                                     columnRow(file, index: index, selected: column.selectedName == file.name)
                                 }
                             }
@@ -280,14 +307,12 @@ struct ConnectionPane: View {
         .padding(.horizontal, 10).frame(height: 27)
         .background(selected ? Color.accentColor.opacity(0.16) : .clear)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if file.isDirectory { tab.openColumnFolder(file, at: index) }
-            else { tab.selectColumnFile(file, at: index); open(file) }
-        }
-        .onTapGesture {
+        .overlay(FileRowClickObserver(onSelect: {
             if file.isDirectory { tab.openColumnFolder(file, at: index) }
             else { tab.selectColumnFile(file, at: index) }
-        }
+        }, onDoubleClick: {
+            if !file.isDirectory { open(file) }
+        }))
         .contextMenu { fileContextMenu(file, columnIndex: index) }
     }
 
@@ -326,21 +351,40 @@ struct ConnectionPane: View {
                 .frame(width: 18)
             Text(file.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
             Text(file.isDirectory ? "—" : formattedSize(file.size)).frame(width: 85, alignment: .trailing)
-            Text(file.modified).frame(width: 130, alignment: .trailing)
+            Text(file.modified).frame(width: 150, alignment: .trailing)
             Text(file.permissions).frame(width: 96, alignment: .trailing)
         }
         .font(.system(size: 11.5))
         .padding(.horizontal, 18).frame(height: 29)
         .background(tab.selectedFile == file.name && file.name != ".." ? Color.accentColor.opacity(0.13) : .clear)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { open(file) }
-        .onTapGesture { tab.selectedFile = file.name == ".." ? nil : file.name }
+        .overlay(FileRowClickObserver(onSelect: {
+            tab.selectedFile = file.name == ".." ? nil : file.name
+        }, onDoubleClick: { open(file) }))
         .contextMenu { fileContextMenu(file) }
     }
 
     private func formattedSize(_ raw: String) -> String {
         guard let bytes = Int64(raw) else { return raw }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func sortHeader(_ key: RemoteFileSortKey) -> some View {
+        Button {
+            fileSort.select(key)
+        } label: {
+            HStack(spacing: 3) {
+                Text(key.rawValue)
+                if fileSort.key == key {
+                    Image(systemName: fileSort.ascending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: key == .name ? .leading : .trailing)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("按\(key.rawValue)排序")
     }
 
     @ViewBuilder private func fileContextMenu(_ file: RemoteFile, columnIndex: Int? = nil) -> some View {
