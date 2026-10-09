@@ -18,13 +18,6 @@ private enum WorkspaceTab: Identifiable {
     }
 }
 
-private struct TabStripWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 private struct WindowXProbe: NSViewRepresentable {
     @Binding var leadingX: CGFloat
     @Binding var windowWidth: CGFloat
@@ -181,7 +174,7 @@ struct WorkspaceView: View {
     @State private var showsSidebar = true
     @State private var showsFiles = true
     @AppStorage("filePanelPosition") private var filePanelPosition: FilePanelPosition = .bottom
-    @State private var measuredTabStripWidth: CGFloat = 0
+    @State private var tabScrollAnchorID: UUID?
     @State private var mainLeadingX: CGFloat = 0
     @State private var windowWidth: CGFloat = 960
     private let refresh = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
@@ -206,7 +199,9 @@ struct WorkspaceView: View {
             }
         } + CGFloat(max(0, tabs.count - 1)) * 5
     }
-    private var tabStripWidth: CGFloat { min(680, tabButtonWidth + 36) }
+    private var availableTabStripWidth: CGFloat { max(180, windowWidth - mainLeadingX - 190) }
+    private var tabStripWidth: CGFloat { min(tabButtonWidth + 42, availableTabStripWidth) }
+    private var tabStripOverflows: Bool { tabButtonWidth + 42 > availableTabStripWidth }
     private var titlebarSignature: [String] {
         tabs.map { item in
             switch item {
@@ -242,7 +237,7 @@ struct WorkspaceView: View {
         .background(Color(nsColor: .windowBackgroundColor), ignoresSafeAreaEdges: [])
         .background {
             TitlebarTabAccessory(leadingX: mainLeadingX, windowWidth: windowWidth,
-                                 tabWidth: max(tabStripWidth, measuredTabStripWidth),
+                                 tabWidth: tabStripWidth,
                                  stateSignature: titlebarSignature, content: tabStrip, controls: windowControls)
                 .frame(width: 1, height: 1)
         }
@@ -355,49 +350,83 @@ struct WorkspaceView: View {
     }
 
     private var tabStrip: some View {
-        HStack(spacing: 4) {
-            Group {
-                if tabButtonWidth <= 640 { tabButtons }
-                else {
-                    ScrollView(.horizontal, showsIndicators: false) { tabButtons }
-                        .frame(width: 640)
+        ScrollViewReader { proxy in
+            HStack(spacing: 4) {
+                if tabStripOverflows {
+                    tabScrollButton("chevron.left", help: "查看前面的标签页") {
+                        scrollTabs(backward: true, using: proxy)
+                    }
                 }
+                ScrollView(.horizontal, showsIndicators: false) { tabButtons }
+                    .frame(width: max(70, tabStripWidth - (tabStripOverflows ? 56 : 0) - 34))
+                if tabStripOverflows {
+                    tabScrollButton("chevron.right", help: "查看后面的标签页") {
+                        scrollTabs(backward: false, using: proxy)
+                    }
+                }
+                Button(action: newLibraryTab) { Image(systemName: "plus") }
+                    .buttonStyle(.plain)
+                    .frame(width: 26, height: 26)
+                    .modifier(GlassSurface(radius: 8))
+                    .help("新建标签页")
+                    .accessibilityLabel("在标签后新建标签页")
             }
-            Button(action: newLibraryTab) { Image(systemName: "plus") }
-                .buttonStyle(.plain)
-                .frame(width: 26, height: 26)
-                .modifier(GlassSurface(radius: 8))
-                .help("新建标签页")
-                .accessibilityLabel("在标签后新建标签页")
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .padding(.trailing, 12)
-        .frame(height: 40)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(key: TabStripWidthKey.self, value: geometry.size.width)
+            .frame(width: tabStripWidth, height: 40, alignment: .leading)
+            .onChange(of: selectedItem?.id) { _, id in
+                guard let id else { return }
+                tabScrollAnchorID = id
+                withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .trailing) }
+            }
+            .onChange(of: tabStripOverflows) { _, overflowing in
+                guard overflowing, let id = selectedItem?.id else { return }
+                tabScrollAnchorID = id
+                proxy.scrollTo(id, anchor: .trailing)
             }
         }
-        .onPreferenceChange(TabStripWidthKey.self) { width in
-            if abs(measuredTabStripWidth - width) > 0.5 { measuredTabStripWidth = width }
+    }
+
+    private func tabScrollButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
+        }
+        .buttonStyle(.plain)
+        .frame(width: 24, height: 26)
+        .modifier(GlassSurface(radius: 8))
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private func scrollTabs(backward: Bool, using proxy: ScrollViewProxy) {
+        guard !tabs.isEmpty else { return }
+        let current = tabs.firstIndex(where: { $0.id == tabScrollAnchorID })
+            ?? tabs.firstIndex(where: { $0.id == selectedItem?.id }) ?? 0
+        let visibleCount = max(1, Int((tabStripWidth - 90) / 145) + 1)
+        let index = min(tabs.count - 1, max(0, current + (backward ? -visibleCount : visibleCount)))
+        let id = tabs[index].id
+        tabScrollAnchorID = id
+        withAnimation(.easeOut(duration: 0.18)) {
+            proxy.scrollTo(id, anchor: backward ? .leading : .trailing)
         }
     }
 
     private var tabButtons: some View {
             HStack(spacing: 5) {
                 ForEach(tabs) { item in
-                    switch item {
-                    case .library:
-                        LibraryTabButton(selected: selectedItem?.id == item.id,
-                                         onSelect: { selectedTabID = item.id },
-                                         onClose: { closeTab(item) })
-                    case .connection(let tab):
-                        ConnectionTabButton(tab: tab, selected: selectedItem?.id == item.id,
-                                            onSelect: { selectedTabID = item.id },
-                                            onClose: { closeTab(item) },
-                                            onReconnect: { runAfterMigration { tab.connect() } },
-                                            onDuplicate: { duplicateTab(tab) })
+                    Group {
+                        switch item {
+                        case .library:
+                            LibraryTabButton(selected: selectedItem?.id == item.id,
+                                             onSelect: { selectedTabID = item.id },
+                                             onClose: { closeTab(item) })
+                        case .connection(let tab):
+                            ConnectionTabButton(tab: tab, selected: selectedItem?.id == item.id,
+                                                onSelect: { selectedTabID = item.id },
+                                                onClose: { closeTab(item) },
+                                                onReconnect: { runAfterMigration { tab.connect() } },
+                                                onDuplicate: { duplicateTab(tab) })
+                        }
                     }
+                    .id(item.id)
                 }
             }
             .padding(.horizontal, 4)
