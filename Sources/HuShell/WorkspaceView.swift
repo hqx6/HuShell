@@ -285,27 +285,32 @@ struct WorkspaceView: View {
 
     private var windowControls: some View {
             HStack(spacing: 6) {
-                Button(action: newLibraryTab) { Image(systemName: "plus") }
+                Button(action: newLibraryTab) {
+                    Image(systemName: "plus")
+                        .frame(width: 28, height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
                     .help("新建标签页")
                     .accessibilityLabel("新建标签页")
-                    .frame(width: 28, height: 28)
                     .modifier(GlassSurface(radius: 8))
 
                 Button { showsSidebar.toggle(); if showsSidebar { selectedTab?.loadStats() } } label: {
                     Image(systemName: "sidebar.left")
+                        .frame(width: 28, height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .help(showsSidebar ? "隐藏主机信息" : "显示主机信息")
                 .accessibilityLabel(showsSidebar ? "隐藏主机信息" : "显示主机信息")
-                .frame(width: 28, height: 28)
                 .modifier(GlassSurface(radius: 8))
 
                 Button { showsFiles.toggle() } label: {
                     Image(systemName: filePanelPosition == .right ? "sidebar.right" : "rectangle.bottomthird.inset.filled")
+                        .frame(width: 28, height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .help(showsFiles ? "隐藏文件栏" : "显示文件栏")
                 .accessibilityLabel(showsFiles ? "隐藏文件栏" : "显示文件栏")
                 .disabled(selectedTab == nil)
-                .frame(width: 28, height: 28)
                 .modifier(GlassSurface(radius: 8))
 
                 Image(systemName: "slider.horizontal.3")
@@ -315,6 +320,7 @@ struct WorkspaceView: View {
                         filePanelPosition = position
                         showsFiles = true
                     }
+                    .frame(width: 28, height: 28)
                 }
                 .help("布局设置")
                 .accessibilityLabel("布局设置")
@@ -366,9 +372,12 @@ struct WorkspaceView: View {
                         scrollTabs(backward: false, using: proxy)
                     }
                 }
-                Button(action: newLibraryTab) { Image(systemName: "plus") }
+                Button(action: newLibraryTab) {
+                    Image(systemName: "plus")
+                        .frame(width: 26, height: 26)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
                     .buttonStyle(.plain)
-                    .frame(width: 26, height: 26)
                     .modifier(GlassSurface(radius: 8))
                     .help("新建标签页")
                     .accessibilityLabel("在标签后新建标签页")
@@ -389,10 +398,12 @@ struct WorkspaceView: View {
 
     private func tabScrollButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 24, height: 26)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .frame(width: 24, height: 26)
         .modifier(GlassSurface(radius: 8))
         .help(help)
         .accessibilityLabel(help)
@@ -546,9 +557,16 @@ private struct LibraryTabButton: View {
         HStack(spacing: 7) {
             Button(action: onSelect) {
                 Label("连接", systemImage: "square.grid.2x2")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 18, height: 28)
+                    .contentShape(Rectangle())
+            }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("关闭标签页")
         }
         .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
@@ -578,9 +596,16 @@ private struct ConnectionTabButton: View {
                     Circle().fill(tab.connected ? .green : .gray).frame(width: 6, height: 6)
                     Text(tab.profile.name).lineLimit(1).frame(maxWidth: 180)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 18, height: 28)
+                    .contentShape(Rectangle())
+            }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("关闭标签页")
         }
         .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
