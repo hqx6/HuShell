@@ -188,16 +188,18 @@ struct WorkspaceView: View {
         tabs.compactMap { if case .connection(let tab) = $0 { return tab }; return nil }
     }
     private var tabButtonWidth: CGFloat {
-        let labelFont = NSFont.systemFont(ofSize: 11.5)
         return tabs.reduce(CGFloat(0)) { width, item in
             switch item {
             case .library: return width + 130
             case .connection(let tab):
-                let textWidth = (tab.profile.name as NSString)
-                    .size(withAttributes: [.font: labelFont]).width
-                return width + min(240, max(145, textWidth + 72))
+                return width + connectionTabWidth(for: tab.profile.name)
             }
         } + CGFloat(max(0, tabs.count - 1)) * 5
+    }
+    private func connectionTabWidth(for name: String) -> CGFloat {
+        let textWidth = (name as NSString)
+            .size(withAttributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold)]).width
+        return min(240, max(145, textWidth + 60))
     }
     private var availableTabStripWidth: CGFloat { max(180, windowWidth - mainLeadingX - 190) }
     private var tabStripWidth: CGFloat { min(tabButtonWidth + 42, availableTabStripWidth) }
@@ -420,6 +422,7 @@ struct WorkspaceView: View {
                                              onClose: { closeTab(item) })
                         case .connection(let tab):
                             ConnectionTabButton(tab: tab, selected: selectedItem?.id == item.id,
+                                                width: connectionTabWidth(for: tab.profile.name),
                                                 onSelect: { selectedTabID = item.id },
                                                 onClose: { closeTab(item) },
                                                 onReconnect: { runAfterMigration { tab.connect() } },
@@ -549,7 +552,7 @@ private struct LibraryTabButton: View {
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("关闭标签页")
         }
         .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-        .padding(.horizontal, 11).frame(minWidth: 130).frame(height: 28)
+        .padding(.horizontal, 11).frame(width: 130, height: 28)
         .modifier(GlassSurface(radius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10)
             .strokeBorder(selected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.15), lineWidth: 1))
@@ -562,6 +565,7 @@ private struct LibraryTabButton: View {
 private struct ConnectionTabButton: View {
     @ObservedObject var tab: ConnectionTab
     let selected: Bool
+    let width: CGFloat
     let onSelect: () -> Void
     let onClose: () -> Void
     let onReconnect: () -> Void
@@ -580,7 +584,7 @@ private struct ConnectionTabButton: View {
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("关闭标签页")
         }
         .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-        .padding(.horizontal, 11).frame(minWidth: 145).frame(height: 28)
+        .padding(.horizontal, 11).frame(width: width, height: 28)
         .modifier(GlassSurface(radius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10)
             .strokeBorder(selected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.15), lineWidth: 1))
