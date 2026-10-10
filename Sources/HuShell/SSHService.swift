@@ -34,7 +34,7 @@ final class TransferCancellation: @unchecked Sendable {
         self.process = process
         let shouldStop = cancelled
         lock.unlock()
-        if shouldStop && process.isRunning { process.terminate() }
+        if shouldStop { Self.stop(process) }
     }
 
     func detach(_ process: Process) {
@@ -48,7 +48,19 @@ final class TransferCancellation: @unchecked Sendable {
         cancelled = true
         let process = self.process
         lock.unlock()
-        if let process, process.isRunning { process.terminate() }
+        if let process { Self.stop(process) }
+    }
+
+    static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        // Process starts a separate group for sftp; ssh inherits it. Stop both so
+        // an inherited output pipe cannot keep a cancelled transfer alive.
+        if getpgid(pid) == pid {
+            _ = kill(-pid, SIGTERM)
+        } else {
+            process.terminate()
+        }
     }
 }
 
@@ -86,21 +98,25 @@ enum SSHService {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
-        if let input {
-            let source = Pipe()
-            process.standardInput = source
-            try process.run()
+        let source = input == nil ? nil : Pipe()
+        process.standardInput = source ?? FileHandle.nullDevice
+        try process.run()
+        defer { cancellation?.detach(process) }
+        let watchdog = cancellation == nil ? nil : TransferWatchdog.start(for: process)
+        defer {
+            if let watchdog {
+                if watchdog.isRunning { watchdog.terminate() }
+                watchdog.waitUntilExit()
+            }
+        }
+        if let input, let source {
             source.fileHandleForWriting.write(input)
             try? source.fileHandleForWriting.close()
-        } else {
-            process.standardInput = FileHandle.nullDevice
-            try process.run()
         }
         cancellation?.attach(process)
-        defer { cancellation?.detach(process) }
         if let timeout {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning { process.terminate() }
+                TransferCancellation.stop(process)
             }
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()

@@ -5,6 +5,7 @@ import AppKit
     @StateObject private var store = ProfileStore()
 
     init() {
+        _ = TransferWatchdog.runIfRequested()
         _ = Askpass.handleIfRequested()
         if let index = CommandLine.arguments.firstIndex(of: "--import-finalshell"),
            CommandLine.arguments.count > index + 1 {

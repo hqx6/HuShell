@@ -280,7 +280,13 @@ struct WorkspaceView: View {
         .onReceive(refresh) { _ in
             if showsSidebar, let selectedTab, selectedTab.connected { selectedTab.loadStats() }
         }
-        .onDisappear { connectionTabs.forEach { $0.disconnect() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            transferCenter.cancelAll()
+        }
+        .onDisappear {
+            transferCenter.cancelAll()
+            connectionTabs.forEach { $0.disconnect() }
+        }
     }
 
     private var windowControls: some View {

@@ -52,4 +52,24 @@ final class TransferCenterTests: XCTestCase {
         }
         XCTAssertLessThan(Date().timeIntervalSince(started), 3)
     }
+
+    func testCancellationStopsProcessAndChildHoldingOutputOpen() async throws {
+        let cancellation = TransferCancellation()
+        let profile = ConnectionProfile(name: "test", host: "localhost", username: "test")
+        let started = Date()
+        let operation = Task.detached {
+            try SSHService.run("/bin/sh", args: ["-c", "sleep 10 & wait"], profile: profile,
+                               timeout: nil, cancellation: cancellation)
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        cancellation.cancel()
+        do {
+            _ = try await operation.value
+            XCTFail("Cancelled process group unexpectedly succeeded")
+        } catch let error as SSHError {
+            guard case .cancelled = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3,
+                          "A surviving child keeps the inherited output pipe open")
+    }
 }
