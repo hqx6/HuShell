@@ -83,9 +83,9 @@ struct HostStats {
             case "process" where fields.count >= 6:
                 let name = (fields[5] as NSString).lastPathComponent
                 processes.append(HostProcess(pid: fields[2], cpu: fields[3], memory: fields[4], command: name))
-            case "gpu" where fields.count >= 7:
-                guard let index = Int(fields[2]), index >= 0, !fields[3].isEmpty else { break }
-                gpus.append(HostGPU(index: index, name: fields[3],
+            case "gpu", "npu":
+                guard fields.count >= 7, let index = Int(fields[2]), index >= 0, !fields[3].isEmpty else { break }
+                gpus.append(HostGPU(kind: fields[1] == "npu" ? .npu : .gpu, index: index, name: fields[3],
                                     memoryUsedMiB: Double(fields[4]), memoryTotalMiB: Double(fields[5]),
                                     utilization: Double(fields[6])))
             case "mount" where fields.count >= 7:
@@ -118,12 +118,14 @@ struct HostProcess: Identifiable {
 }
 
 struct HostGPU: Identifiable {
+    enum Kind: String { case gpu = "GPU", npu = "NPU" }
+    let kind: Kind
     let index: Int
     let name: String
     let memoryUsedMiB: Double?
     let memoryTotalMiB: Double?
     let utilization: Double?
-    var id: Int { index }
+    var id: String { "\(kind.rawValue)-\(index)" }
     var memoryFraction: Double {
         guard let memoryUsedMiB, let memoryTotalMiB, memoryTotalMiB > 0 else { return 0 }
         return min(max(memoryUsedMiB / memoryTotalMiB, 0), 1)

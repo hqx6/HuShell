@@ -174,8 +174,45 @@ enum SSHService {
         ps -eo pid=,pcpu=,rss=,comm= 2>/dev/null | sort -k2nr | head -5 | awk '{memory=$3>=1048576 ? sprintf("%.1fG",$3/1048576) : sprintf("%.0fM",$3/1024); command=$4; for (i=5;i<=NF;i++) command=command " " $i; printf "HUSHELL|process|%s|%s|%s|%s\n", $1, $2, memory, command}'
         fi
         if [ "$monitor_gpu" = 1 ]; then
+        gpu_lines=
         if command -v nvidia-smi >/dev/null 2>&1; then
-          nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, 'NF>=5 {gpuIndex=$1; used=$(NF-2); total=$(NF-1); util=$NF; name=$2; for (i=3;i<=NF-3;i++) name=name "," $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpuIndex); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); gsub(/^[[:space:]]+|[[:space:]]+$/, "", used); gsub(/^[[:space:]]+|[[:space:]]+$/, "", total); gsub(/^[[:space:]]+|[[:space:]]+$/, "", util); gsub(/\|/, "/", name); printf "HUSHELL|gpu|%s|%s|%s|%s|%s\n", gpuIndex, name, used, total, util}'
+          gpu_lines=$(nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, 'NF>=5 {gpuIndex=$1; used=$(NF-2); total=$(NF-1); util=$NF; name=$2; for (i=3;i<=NF-3;i++) name=name "," $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpuIndex); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); gsub(/^[[:space:]]+|[[:space:]]+$/, "", used); gsub(/^[[:space:]]+|[[:space:]]+$/, "", total); gsub(/^[[:space:]]+|[[:space:]]+$/, "", util); gsub(/\|/, "/", name); if (gpuIndex ~ /^[0-9]+$/ && name != "") printf "HUSHELL|gpu|%s|%s|%s|%s|%s\n", gpuIndex, name, used, total, util}')
+        fi
+        if [ -n "$gpu_lines" ]; then
+          printf '%s\n' "$gpu_lines"
+        else
+          npu_smi=
+          if command -v npu-smi >/dev/null 2>&1; then
+            npu_smi=$(command -v npu-smi)
+          elif [ -x /usr/local/Ascend/driver/tools/npu-smi ]; then
+            npu_smi=/usr/local/Ascend/driver/tools/npu-smi
+          fi
+          if [ -n "$npu_smi" ]; then
+            "$npu_smi" info 2>/dev/null | awk -F'|' '
+              function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+              /\|[[:space:]]*NPU[[:space:]]+Name/ { devices=1; next }
+              /\|[[:space:]]*NPU[[:space:]]+Chip[[:space:]]*\|[[:space:]]*Process/ { devices=0; next }
+              devices && /^\|/ {
+                first=trim($2); second=trim($3); metrics=trim($4)
+                if (first ~ /^[0-9]+[[:space:]]+[^[:space:]]/ && second !~ /^[0-9]+$/) {
+                  npuIndex=first; sub(/[[:space:]].*$/, "", npuIndex)
+                  name=first; sub(/^[0-9]+[[:space:]]+/, "", name); gsub(/\|/, "/", name)
+                  pending=1; next
+                }
+                if (pending && first ~ /^[0-9]+$/ && second ~ /:/) {
+                  gsub(/[[:space:]]*\/[[:space:]]*/, "/", metrics)
+                  count=split(metrics, parts, /[[:space:]]+/)
+                  utilization=parts[1]
+                  split(parts[count], hbm, "/")
+                  split(parts[count-1], memory, "/")
+                  if (hbm[2]+0 > 0) { used=hbm[1]; total=hbm[2] }
+                  else { used=memory[1]; total=memory[2] }
+                  if (total+0 > 0 && utilization ~ /^[0-9]+([.][0-9]+)?$/)
+                    printf "HUSHELL|npu|%s|%s|%s|%s|%s\n", npuIndex, name, used, total, utilization
+                  pending=0
+                }
+              }'
+          fi
         fi
         fi
         if [ "$monitor_network" = 1 ]; then

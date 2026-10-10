@@ -108,18 +108,18 @@ private struct HostMonitorContent: View {
                 if stats.processes.isEmpty { placeholder("连接后显示 CPU 占用最高的进程") }
                 }
 
-                sectionTitle("GPU", section: .gpu)
+                sectionTitle(stats.gpus.first?.kind.rawValue ?? "GPU / NPU", section: .gpu)
                 if sections.contains(.gpu) {
                 ForEach(stats.gpus) { gpu in
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 6) {
-                            Text("GPU \(gpu.index)")
+                            Text("\(gpu.kind.rawValue) \(gpu.index)")
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.secondary)
                             Text(gpu.name).font(.system(size: 10, weight: .medium))
                                 .lineLimit(2).help(gpu.name)
                         }
-                        gpuMetric("显存", fraction: gpu.memoryFraction,
+                        gpuMetric(gpu.kind == .npu ? "HBM" : "显存", fraction: gpu.memoryFraction,
                                   detail: gpu.memoryText, tint: .cyan)
                         gpuMetric("利用率", fraction: (gpu.utilization ?? 0) / 100,
                                   detail: gpu.utilizationText, tint: .green)
@@ -128,7 +128,7 @@ private struct HostMonitorContent: View {
                     Divider().opacity(0.35)
                 }
                 if stats.gpus.isEmpty {
-                    placeholder(connected ? "未检测到 NVIDIA GPU" : "连接后显示 GPU 信息")
+                    placeholder(connected ? "未检测到 GPU 或 NPU" : "连接后显示 GPU / NPU 信息")
                 }
                 }
 
