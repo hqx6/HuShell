@@ -22,6 +22,7 @@ struct ConnectionPane: View {
     @State private var showsNewFolder = false
     @State private var newFolderName = ""
     @State private var browserMode: FileBrowserMode = .list
+    @State private var columnWidths: [String: CGFloat] = [:]
     @State private var fileSort = RemoteFileSort()
     @State private var showsTransfers = false
     @State private var isDropTargeted = false
@@ -256,6 +257,7 @@ struct ConnectionPane: View {
                             .frame(maxWidth: .infinity, minHeight: 130)
                     }
                 }
+                .background(CompactScrollIndicators())
             }
         }
     }
@@ -281,18 +283,31 @@ struct ConnectionPane: View {
                                 }
                             }
                             .padding(.vertical, 5)
+                            .background(CompactScrollIndicators())
                         }
-                        .frame(width: 220)
+                        .frame(width: columnWidth(for: column.path))
                         .id(column.path)
-                        Divider()
+                        SplitResizeHandle(axis: .horizontal, size: columnWidth(for: column.path)) { width in
+                            columnWidths[column.path] = min(520, max(140, width))
+                        }
+                        .frame(width: 5)
+                        .frame(maxHeight: .infinity)
+                        .help("拖动调整目录宽度")
+                        .accessibilityElement()
+                        .accessibilityLabel("调整目录宽度")
                     }
                 }
                 .frame(maxHeight: .infinity)
+                .background(CompactScrollIndicators())
             }
             .onChange(of: tab.columns.count) { _, _ in
                 if let last = tab.columns.last { withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(last.path, anchor: .trailing) } }
             }
         }
+    }
+
+    private func columnWidth(for path: String) -> CGFloat {
+        columnWidths[path] ?? 220
     }
 
     private func columnRow(_ file: RemoteFile, index: Int, selected: Bool) -> some View {
@@ -556,7 +571,10 @@ struct ConnectionPane: View {
                                          size: String(size), modified: "", permissions: "")
                 transferCenter.download(profile: profile, file: archive, remote: remote, local: local) { result in
                     Task.detached { SSHService.removeArchive(profile: profile, path: remote) }
-                    if case .failure(let error) = result { tab.errorMessage = error.localizedDescription }
+                    if case .failure(let error) = result {
+                        if let sshError = error as? SSHError, case .cancelled = sshError { return }
+                        tab.errorMessage = error.localizedDescription
+                    }
                 }
                 showsTransfers = true
             }

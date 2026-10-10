@@ -11,6 +11,7 @@ enum TransferPhase: String {
     case running = "传输中"
     case completed = "已完成"
     case failed = "失败"
+    case cancelled = "已终止"
 }
 
 struct TransferRecord: Identifiable {
@@ -32,10 +33,18 @@ struct TransferRecord: Identifiable {
         guard totalBytes > 0 else { return nil }
         return min(max(Double(completedBytes) / Double(totalBytes), 0), 1)
     }
+
+    func estimatedCompletion(at now: Date = Date()) -> Date? {
+        guard phase == .running, totalBytes > completedBytes, bytesPerSecond > 1 else { return nil }
+        let seconds = Double(totalBytes - completedBytes) / bytesPerSecond
+        guard seconds.isFinite, seconds < 365 * 24 * 60 * 60 else { return nil }
+        return now.addingTimeInterval(seconds)
+    }
 }
 
 @MainActor final class TransferCenter: ObservableObject {
     @Published private(set) var items: [TransferRecord] = []
+    private var cancellations: [UUID: TransferCancellation] = [:]
 
     var activeCount: Int { items.filter { $0.phase == .waiting || $0.phase == .running }.count }
 
@@ -44,7 +53,9 @@ struct TransferRecord: Identifiable {
         let size = ((try? FileManager.default.attributesOfItem(atPath: local.path)[.size]) as? NSNumber)?.int64Value ?? 0
         let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent, totalBytes: size)
         start(id: id, profile: profile, monitor: .remote(remote),
-              operation: { try SSHService.upload(profile: profile, local: local, remote: remote) },
+              operation: { cancellation in
+                  try SSHService.upload(profile: profile, local: local, remote: remote, cancellation: cancellation)
+              },
               completion: completion)
     }
 
@@ -53,12 +64,30 @@ struct TransferRecord: Identifiable {
         let id = add(direction: .download, profile: profile, fileName: file.name,
                      totalBytes: Int64(file.size) ?? 0)
         start(id: id, profile: profile, monitor: .local(local),
-              operation: { try SSHService.download(profile: profile, remote: remote, local: local) },
+              operation: { cancellation in
+                  try SSHService.download(profile: profile, remote: remote, local: local, cancellation: cancellation)
+              },
               completion: completion)
     }
 
     func clearFinished() {
-        items.removeAll { $0.phase == .completed || $0.phase == .failed }
+        items.removeAll { $0.phase == .completed || $0.phase == .failed || $0.phase == .cancelled }
+    }
+
+    func cancel(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }),
+              item.phase == .waiting || item.phase == .running else { return }
+        change(id) {
+            $0.phase = .cancelled
+            $0.finishedAt = Date()
+            $0.bytesPerSecond = 0
+        }
+        cancellations[id]?.cancel()
+    }
+
+    func cancelAll() {
+        let activeIDs = items.filter { $0.phase == .waiting || $0.phase == .running }.map(\.id)
+        activeIDs.forEach(cancel)
     }
 
     private func add(direction: TransferDirection, profile: ConnectionProfile,
@@ -75,11 +104,14 @@ struct TransferRecord: Identifiable {
     }
 
     private func start(id: UUID, profile: ConnectionProfile, monitor: MonitorSource,
-                       operation: @escaping () throws -> Void,
+                       operation: @escaping (TransferCancellation) throws -> Void,
                        completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
+        let cancellation = TransferCancellation()
+        cancellations[id] = cancellation
         Task { [weak self] in
             guard let self else { return }
             self.change(id) { item in
+                guard item.phase != .cancelled else { return }
                 item.phase = .running
                 item.startedAt = Date()
                 item.lastSampleAt = item.startedAt
@@ -99,20 +131,23 @@ struct TransferRecord: Identifiable {
                     if let bytes { self?.sample(id, bytes: bytes) }
                 }
             }
-            let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try operation(cancellation) }
+            }.value
             poller.cancel()
+            self.cancellations.removeValue(forKey: id)
             self.change(id) { item in
-                item.phase = result.isSuccess ? .completed : .failed
+                item.phase = cancellation.isCancelled ? .cancelled : result.isSuccess ? .completed : .failed
                 item.finishedAt = Date()
-                if result.isSuccess {
+                if result.isSuccess && !cancellation.isCancelled {
                     item.completedBytes = item.totalBytes > 0 ? item.totalBytes : item.completedBytes
                     let duration = max(item.finishedAt!.timeIntervalSince(item.startedAt ?? item.finishedAt!), 0.001)
                     item.bytesPerSecond = Double(item.completedBytes) / duration
-                } else if case .failure(let error) = result {
+                } else if !cancellation.isCancelled, case .failure(let error) = result {
                     item.error = error.localizedDescription
                 }
             }
-            completion(result)
+            completion(cancellation.isCancelled ? .failure(SSHError.cancelled) : result)
         }
     }
 
@@ -122,7 +157,10 @@ struct TransferRecord: Identifiable {
             let now = Date()
             let elapsed = max(now.timeIntervalSince(item.lastSampleAt ?? now), 0.001)
             let next = item.totalBytes > 0 ? min(max(bytes, 0), item.totalBytes) : max(bytes, 0)
-            item.bytesPerSecond = max(Double(next - item.lastSampleBytes) / elapsed, 0)
+            let instantSpeed = max(Double(next - item.lastSampleBytes) / elapsed, 0)
+            item.bytesPerSecond = instantSpeed > 0
+                ? (item.bytesPerSecond > 0 ? item.bytesPerSecond * 0.65 + instantSpeed * 0.35 : instantSpeed)
+                : item.bytesPerSecond * 0.5
             item.completedBytes = next
             item.lastSampleBytes = next
             item.lastSampleAt = now
@@ -153,7 +191,9 @@ struct TransferCenterView: View {
                     Text("\(center.activeCount) 项进行中").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("清除已完成") { center.clearFinished() }
+                Button("全部终止") { center.cancelAll() }
+                    .font(.system(size: 11)).disabled(center.activeCount == 0)
+                Button("清除记录") { center.clearFinished() }
                     .font(.system(size: 11)).disabled(center.items.allSatisfy { $0.phase == .running || $0.phase == .waiting })
             }
             .padding(15)
@@ -172,7 +212,7 @@ struct TransferCenterView: View {
                 }
             }
         }
-        .frame(width: 420, height: 390)
+        .frame(width: 470, height: 420)
     }
 
     private func transferRow(_ item: TransferRecord) -> some View {
@@ -186,6 +226,11 @@ struct TransferCenterView: View {
                     Text(item.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
                     Spacer()
                     Text(item.phase.rawValue).foregroundStyle(item.phase == .failed ? .red : .secondary)
+                    if item.phase == .running || item.phase == .waiting {
+                        Button("终止") { center.cancel(item.id) }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("终止 \(item.fileName)")
+                    }
                 }
                 HStack {
                     Text("\(item.direction.rawValue) · \(item.profileName)")
@@ -196,6 +241,8 @@ struct TransferCenterView: View {
                 if item.phase == .running || item.phase == .waiting {
                     if let fraction = item.fraction { ProgressView(value: fraction) }
                     else { ProgressView() }
+                    Text(estimatedCompletionText(item))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                 } else if item.phase == .completed {
                     ProgressView(value: 1)
                 }
@@ -214,5 +261,15 @@ struct TransferCenterView: View {
             ? ByteCountFormatter.string(fromByteCount: Int64(item.bytesPerSecond), countStyle: .file) + "/s"
             : "—"
         return "\(done) / \(total) · \(speed)"
+    }
+
+    private func estimatedCompletionText(_ item: TransferRecord) -> String {
+        if item.phase == .waiting { return "预计完成：等待开始" }
+        if item.totalBytes <= 0 { return "预计完成：文件大小未知" }
+        guard let date = item.estimatedCompletion() else { return "预计完成：计算中" }
+        let value = Calendar.current.isDateInToday(date)
+            ? date.formatted(.dateTime.hour().minute().second())
+            : date.formatted(.dateTime.month().day().hour().minute())
+        return "预计完成：\(value)"
     }
 }

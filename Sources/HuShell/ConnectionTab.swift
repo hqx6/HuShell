@@ -272,7 +272,14 @@ import Foundation
                 guard let self, self.generation == generation else { return }
                 switch result {
                 case .success: self.status = "上传完成"; self.loadFiles()
-                case .failure(let error): self.status = "上传失败"; self.errorMessage = error.localizedDescription
+                case .failure(let error):
+                    if let sshError = error as? SSHError, case .cancelled = sshError {
+                        self.status = "上传已终止"
+                        self.loadFiles()
+                    } else {
+                        self.status = "上传失败"
+                        self.errorMessage = error.localizedDescription
+                    }
                 }
             }
         }
@@ -287,7 +294,13 @@ import Foundation
             guard let self, self.generation == generation else { return }
             switch result {
             case .success: self.status = "下载完成"
-            case .failure(let error): self.status = "下载失败"; self.errorMessage = error.localizedDescription
+            case .failure(let error):
+                if let sshError = error as? SSHError, case .cancelled = sshError {
+                    self.status = "下载已终止"
+                } else {
+                    self.status = "下载失败"
+                    self.errorMessage = error.localizedDescription
+                }
             }
         }
     }

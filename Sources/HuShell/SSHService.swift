@@ -4,15 +4,51 @@ import Darwin
 enum SSHError: LocalizedError {
     case launch(String)
     case command(String)
+    case cancelled
     case invalidPath
     case unsafeTarget
     var errorDescription: String? {
         switch self {
         case .launch(let value): return "无法启动 SSH：\(value)"
         case .command(let value): return value.isEmpty ? "远程操作失败" : value
+        case .cancelled: return "传输已终止"
         case .invalidPath: return "文件路径包含不支持的换行符"
         case .unsafeTarget: return "不能删除根目录或上级目录"
         }
+    }
+}
+
+final class TransferCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func attach(_ process: Process) {
+        lock.lock()
+        self.process = process
+        let shouldStop = cancelled
+        lock.unlock()
+        if shouldStop && process.isRunning { process.terminate() }
+    }
+
+    func detach(_ process: Process) {
+        lock.lock()
+        if self.process === process { self.process = nil }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let process = self.process
+        lock.unlock()
+        if let process, process.isRunning { process.terminate() }
     }
 }
 
@@ -40,7 +76,9 @@ enum SSHService {
     }
 
     static func run(_ executable: String, args: [String], profile: ConnectionProfile,
-                    input: Data? = nil, timeout: TimeInterval? = 45) throws -> String {
+                    input: Data? = nil, timeout: TimeInterval? = 45,
+                    cancellation: TransferCancellation? = nil) throws -> String {
+        if cancellation?.isCancelled == true { throw SSHError.cancelled }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
@@ -58,6 +96,8 @@ enum SSHService {
             process.standardInput = FileHandle.nullDevice
             try process.run()
         }
+        cancellation?.attach(process)
+        defer { cancellation?.detach(process) }
         if let timeout {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 if process.isRunning { process.terminate() }
@@ -65,6 +105,7 @@ enum SSHService {
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        if cancellation?.isCancelled == true { throw SSHError.cancelled }
         let text = String(decoding: data, as: UTF8.self)
         guard process.terminationStatus == 0 else { throw SSHError.command(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
         return text
@@ -117,7 +158,8 @@ enum SSHService {
             .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
-    static func sftp(profile: ConnectionProfile, command: String, transfer: Bool = false) throws -> String {
+    static func sftp(profile: ConnectionProfile, command: String, transfer: Bool = false,
+                     cancellation: TransferCancellation? = nil) throws -> String {
         let args = ["-o", "BatchMode=no", "-o", "ConnectTimeout=12", "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=15",
                     "-o", "ServerAliveCountMax=3", "-P", String(profile.port)]
@@ -125,7 +167,8 @@ enum SSHService {
             + (profile.identityFile.isEmpty ? [] : ["-i", profile.identityFile])
             + ["-b", "-", profile.endpoint]
         return try run("/usr/bin/sftp", args: args, profile: profile,
-                       input: Data((command + "\n").utf8), timeout: transfer ? nil : 45)
+                       input: Data((command + "\n").utf8), timeout: transfer ? nil : 45,
+                       cancellation: cancellation)
     }
 
     static func list(profile: ConnectionProfile, path: String) throws -> [RemoteFile] {
@@ -177,12 +220,16 @@ enum SSHService {
         }
     }
 
-    static func download(profile: ConnectionProfile, remote: String, local: URL) throws {
-        _ = try sftp(profile: profile, command: "get " + sftpQuote(remote) + " " + sftpQuote(local.path), transfer: true)
+    static func download(profile: ConnectionProfile, remote: String, local: URL,
+                         cancellation: TransferCancellation? = nil) throws {
+        _ = try sftp(profile: profile, command: "get " + sftpQuote(remote) + " " + sftpQuote(local.path),
+                     transfer: true, cancellation: cancellation)
     }
 
-    static func upload(profile: ConnectionProfile, local: URL, remote: String) throws {
-        _ = try sftp(profile: profile, command: "put " + sftpQuote(local.path) + " " + sftpQuote(remote), transfer: true)
+    static func upload(profile: ConnectionProfile, local: URL, remote: String,
+                       cancellation: TransferCancellation? = nil) throws {
+        _ = try sftp(profile: profile, command: "put " + sftpQuote(local.path) + " " + sftpQuote(remote),
+                     transfer: true, cancellation: cancellation)
     }
 
     static func remoteFileSize(profile: ConnectionProfile, path: String) throws -> Int64 {

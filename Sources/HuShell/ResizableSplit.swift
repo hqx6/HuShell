@@ -54,7 +54,7 @@ struct ResizableSplit<First: View, Second: View>: View {
     }
 }
 
-private struct SplitResizeHandle: NSViewRepresentable {
+struct SplitResizeHandle: NSViewRepresentable {
     let axis: Axis
     let size: CGFloat
     let onChange: (CGFloat) -> Void
