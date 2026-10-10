@@ -90,6 +90,28 @@ private struct HostMonitorContent: View {
                 }
                 if stats.processes.isEmpty { placeholder("连接后显示 CPU 占用最高的进程") }
 
+                sectionTitle("GPU")
+                ForEach(stats.gpus) { gpu in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text("GPU \(gpu.index)")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Text(gpu.name).font(.system(size: 10, weight: .medium))
+                                .lineLimit(2).help(gpu.name)
+                        }
+                        gpuMetric("显存", fraction: gpu.memoryFraction,
+                                  detail: gpu.memoryText, tint: .cyan)
+                        gpuMetric("利用率", fraction: (gpu.utilization ?? 0) / 100,
+                                  detail: gpu.utilizationText, tint: .green)
+                    }
+                    .padding(.vertical, 6)
+                    Divider().opacity(0.35)
+                }
+                if stats.gpus.isEmpty {
+                    placeholder(connected ? "未检测到 NVIDIA GPU" : "连接后显示 GPU 信息")
+                }
+
                 sectionTitle("网络")
                 HStack {
                     Label("↓ \(rate(stats.networkReceive))", systemImage: "arrow.down")
@@ -164,6 +186,23 @@ private struct HostMonitorContent: View {
             }
         }
         .font(.system(size: 10)).padding(.bottom, 8)
+    }
+
+    private func gpuMetric(_ label: String, fraction: Double, detail: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(label).frame(width: 35, alignment: .leading)
+            GeometryReader { geometry in
+                RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.09))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2).fill(tint.opacity(0.55))
+                            .frame(width: geometry.size.width * min(max(fraction, 0), 1))
+                    }
+            }
+            .frame(height: 12)
+            Text(detail).monospacedDigit().frame(width: 102, alignment: .trailing)
+        }
+        .font(.system(size: 9.5))
+        .frame(height: 15)
     }
 
     private func rate(_ value: String) -> String {

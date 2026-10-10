@@ -49,6 +49,7 @@ struct HostStats {
     var swapTotal = "—"
     var swapFraction: Double = 0
     var processes: [HostProcess] = []
+    var gpus: [HostGPU] = []
     var disks: [HostDisk] = []
     var networkReceive = "—"
     var networkSend = "—"
@@ -78,6 +79,11 @@ struct HostStats {
             case "process" where fields.count >= 6:
                 let name = (fields[5] as NSString).lastPathComponent
                 processes.append(HostProcess(pid: fields[2], cpu: fields[3], memory: fields[4], command: name))
+            case "gpu" where fields.count >= 7:
+                guard let index = Int(fields[2]), index >= 0, !fields[3].isEmpty else { break }
+                gpus.append(HostGPU(index: index, name: fields[3],
+                                    memoryUsedMiB: Double(fields[4]), memoryTotalMiB: Double(fields[5]),
+                                    utilization: Double(fields[6])))
             case "mount" where fields.count >= 5:
                 disks.append(HostDisk(path: fields[2], used: fields[3], total: fields[4]))
             case "network" where fields.count >= 4:
@@ -85,6 +91,7 @@ struct HostStats {
             default: break
             }
         }
+        gpus.sort { $0.index < $1.index }
     }
 }
 
@@ -94,6 +101,27 @@ struct HostProcess: Identifiable {
     let memory: String
     let command: String
     var id: String { pid }
+}
+
+struct HostGPU: Identifiable {
+    let index: Int
+    let name: String
+    let memoryUsedMiB: Double?
+    let memoryTotalMiB: Double?
+    let utilization: Double?
+    var id: Int { index }
+    var memoryFraction: Double {
+        guard let memoryUsedMiB, let memoryTotalMiB, memoryTotalMiB > 0 else { return 0 }
+        return min(max(memoryUsedMiB / memoryTotalMiB, 0), 1)
+    }
+    var memoryText: String {
+        guard let memoryUsedMiB, let memoryTotalMiB else { return "—" }
+        return String(format: "%.1f / %.1f GiB", memoryUsedMiB / 1024, memoryTotalMiB / 1024)
+    }
+    var utilizationText: String {
+        guard let utilization else { return "—" }
+        return String(format: "%.0f%%", utilization)
+    }
 }
 
 struct HostDisk: Identifiable {

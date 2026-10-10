@@ -143,6 +143,9 @@ enum SSHService {
         df -Pk / 2>/dev/null | awk 'NR==2 {printf "HUSHELL|disk|%.1f|%.1f\n", $3/1048576, $2/1048576}'
         df -Pk 2>/dev/null | awk 'NR>1 && $2>0 {printf "HUSHELL|mount|%s|%.1f|%.1f\n", $NF, $3/1048576, $2/1048576}' | head -14
         ps -eo pid=,pcpu=,rss=,comm= 2>/dev/null | sort -k2nr | head -5 | awk '{memory=$3>=1048576 ? sprintf("%.1fG",$3/1048576) : sprintf("%.0fM",$3/1024); command=$4; for (i=5;i<=NF;i++) command=command " " $i; printf "HUSHELL|process|%s|%s|%s|%s\n", $1, $2, memory, command}'
+        if command -v nvidia-smi >/dev/null 2>&1; then
+          nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, 'NF>=5 {gpuIndex=$1; used=$(NF-2); total=$(NF-1); util=$NF; name=$2; for (i=3;i<=NF-3;i++) name=name "," $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpuIndex); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); gsub(/^[[:space:]]+|[[:space:]]+$/, "", used); gsub(/^[[:space:]]+|[[:space:]]+$/, "", total); gsub(/^[[:space:]]+|[[:space:]]+$/, "", util); gsub(/\|/, "/", name); printf "HUSHELL|gpu|%s|%s|%s|%s|%s\n", gpuIndex, name, used, total, util}'
+        fi
         if [ -r /proc/stat ]; then
           read _ u1 n1 s1 i1 w1 x1 y1 z1 rest < /proc/stat
           net1=$(awk -F: 'NR>2 {name=$1; gsub(/ /,"",name); if (name=="lo") next; gsub(/^ +/, "", $2); split($2,a,/ +/); rx+=a[1]; tx+=a[9]} END {printf "%.0f %.0f", rx, tx}' /proc/net/dev)

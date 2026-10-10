@@ -24,4 +24,19 @@ final class HostStatsTests: XCTestCase {
         XCTAssertEqual(stats.disks.first?.path, "/data")
         XCTAssertEqual(stats.disks.first?.fraction, 0.3)
     }
+
+    func testParsesAndOrdersGPUsWithUnavailableMetrics() {
+        let stats = HostStats(output: """
+        HUSHELL|gpu|1|NVIDIA H100 80GB HBM3|22118|81559|82
+        HUSHELL|gpu|0|NVIDIA A100-SXM4-80GB|40960|81920|N/A
+        """)
+
+        XCTAssertEqual(stats.gpus.map(\.index), [0, 1])
+        XCTAssertEqual(stats.gpus[0].name, "NVIDIA A100-SXM4-80GB")
+        XCTAssertEqual(stats.gpus[0].memoryText, "40.0 / 80.0 GiB")
+        XCTAssertEqual(stats.gpus[0].memoryFraction, 0.5)
+        XCTAssertEqual(stats.gpus[0].utilizationText, "—")
+        XCTAssertEqual(stats.gpus[1].utilizationText, "82%")
+        XCTAssertEqual(stats.gpus[1].memoryText, "21.6 / 79.6 GiB")
+    }
 }
