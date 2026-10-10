@@ -33,6 +33,10 @@ struct RemoteFile: Identifiable, Hashable {
     var id: String { name }
 }
 
+enum HostMonitorSection: String, CaseIterable, Hashable, Sendable {
+    case system, processes, gpu, network, disks
+}
+
 struct HostStats {
     var system = "—"
     var uptime = "—"
@@ -84,6 +88,11 @@ struct HostStats {
                 gpus.append(HostGPU(index: index, name: fields[3],
                                     memoryUsedMiB: Double(fields[4]), memoryTotalMiB: Double(fields[5]),
                                     utilization: Double(fields[6])))
+            case "mount" where fields.count >= 7:
+                guard HostDisk.isPhysicalMount(source: fields[2], filesystem: fields[3], path: fields[4]) else { break }
+                disks.append(HostDisk(path: fields[4] == "/System/Volumes/Data" ? "/" : fields[4],
+                                      used: fields[5], total: fields[6],
+                                      isMacDataVolume: fields[4] == "/System/Volumes/Data"))
             case "mount" where fields.count >= 5:
                 disks.append(HostDisk(path: fields[2], used: fields[3], total: fields[4]))
             case "network" where fields.count >= 4:
@@ -92,6 +101,11 @@ struct HostStats {
             }
         }
         gpus.sort { $0.index < $1.index }
+        if disks.contains(where: \.isMacDataVolume) {
+            disks.removeAll { $0.path == "/" && !$0.isMacDataVolume }
+        }
+        var seenDiskPaths: Set<String> = []
+        disks = disks.filter { seenDiskPaths.insert($0.path).inserted }
     }
 }
 
@@ -128,10 +142,27 @@ struct HostDisk: Identifiable {
     let path: String
     let used: String
     let total: String
+    var isMacDataVolume = false
     var id: String { path }
     var fraction: Double {
         guard let used = Double(used), let total = Double(total), total > 0 else { return 0 }
         return used / total
+    }
+
+    static func isPhysicalMount(source: String, filesystem: String, path: String) -> Bool {
+        let realDevice = source.hasPrefix("/dev/") &&
+            !["/dev/loop", "/dev/ram", "/dev/zram", "/dev/fd"].contains { source.hasPrefix($0) }
+        guard realDevice || filesystem.lowercased() == "zfs" else { return false }
+        let virtualTypes: Set<String> = ["tmpfs", "devtmpfs", "overlay", "squashfs", "ramfs", "proc", "sysfs", "autofs", "fuse", "fuseblk"]
+        guard !virtualTypes.contains(filesystem.lowercased()) else { return false }
+        if source.hasPrefix("/dev/disk") && filesystem == "darwin" {
+            return path == "/" || path == "/System/Volumes/Data" || path.hasPrefix("/Volumes/")
+        }
+        guard path != "/boot", !path.hasPrefix("/boot/"), path != "/efi",
+              path != "/System/Volumes/VM", path != "/System/Volumes/Preboot",
+              !path.hasPrefix("/System/Volumes/Update") else { return false }
+        if path.hasPrefix("/System/Volumes/") && path != "/System/Volumes/Data" { return false }
+        return true
     }
 }
 

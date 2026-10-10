@@ -8,6 +8,7 @@ import Foundation
     @Published var connected = false
     @Published var terminalText = ""
     @Published var stats = HostStats()
+    @Published var monitoredSections = Set(HostMonitorSection.allCases)
     @Published var files: [RemoteFile] = []
     @Published var columns: [RemoteColumn] = []
     @Published var directory = "/"
@@ -108,16 +109,24 @@ import Foundation
     func refresh() { loadStats(); loadFiles() }
 
     func loadStats() {
-        guard connected, !statsLoading else { return }
+        guard connected, !statsLoading, !monitoredSections.isEmpty else { return }
         statsLoading = true
         let profile = profile
         let generation = generation
+        let sections = monitoredSections
         Task { [weak self] in
-            let result = await Task.detached { Result { try SSHService.stats(profile: profile) } }.value
+            let result = await Task.detached { Result { try SSHService.stats(profile: profile, sections: sections) } }.value
             guard let self, self.generation == generation, self.connected else { return }
             self.statsLoading = false
+            guard self.monitoredSections == sections else { self.loadStats(); return }
             if case .success(let value) = result { self.stats = value }
         }
+    }
+
+    func toggleMonitorSection(_ section: HostMonitorSection) {
+        if monitoredSections.contains(section) { monitoredSections.remove(section) }
+        else { monitoredSections.insert(section) }
+        loadStats()
     }
 
     func loadFiles() {

@@ -127,8 +127,22 @@ enum SSHService {
         return text
     }
 
-    static func stats(profile: ConnectionProfile) throws -> HostStats {
-        let script = #"""
+    static func stats(profile: ConnectionProfile, sections: Set<HostMonitorSection>) throws -> HostStats {
+        let script = statsScript(sections: sections)
+        let args = options(for: profile) + ["-p", String(profile.port), profile.endpoint, "sh -c " + shellQuote(script)]
+        return HostStats(output: try run("/usr/bin/ssh", args: args, profile: profile))
+    }
+
+    static func statsScript(sections: Set<HostMonitorSection>) -> String {
+        let flags = """
+        monitor_system=\(sections.contains(.system) ? 1 : 0)
+        monitor_processes=\(sections.contains(.processes) ? 1 : 0)
+        monitor_gpu=\(sections.contains(.gpu) ? 1 : 0)
+        monitor_network=\(sections.contains(.network) ? 1 : 0)
+        monitor_disks=\(sections.contains(.disks) ? 1 : 0)
+        """
+        let script = flags + "\n" + #"""
+        if [ "$monitor_system" = 1 ]; then
         printf 'HUSHELL|system|'; uname -srm
         printf 'HUSHELL|uptime|'; uptime -p 2>/dev/null || uptime
         printf 'HUSHELL|load|'; if [ -r /proc/loadavg ]; then awk '{print $1 " " $2 " " $3}' /proc/loadavg; else sysctl -n vm.loadavg 2>/dev/null | tr -d '{}'; fi; printf '\n'
@@ -140,20 +154,34 @@ enum SSHService {
           sysctl -n vm.swapusage | awk '{used=$6; total=$3; gsub(/M/, "", used); gsub(/M/, "", total); if (total>0) printf "HUSHELL|swap|%.0f|%.0f\n", used, total}'
           top -l 1 -n 0 | awk '/CPU usage:/ {u=$3; s=$5; gsub(/%/, "", u); gsub(/%/, "", s); printf "HUSHELL|cpuUsage|%.0f\n", u+s}'
         fi
-        df -Pk / 2>/dev/null | awk 'NR==2 {printf "HUSHELL|disk|%.1f|%.1f\n", $3/1048576, $2/1048576}'
-        df -Pk 2>/dev/null | awk 'NR>1 && $2>0 {printf "HUSHELL|mount|%s|%.1f|%.1f\n", $NF, $3/1048576, $2/1048576}' | head -14
-        ps -eo pid=,pcpu=,rss=,comm= 2>/dev/null | sort -k2nr | head -5 | awk '{memory=$3>=1048576 ? sprintf("%.1fG",$3/1048576) : sprintf("%.0fM",$3/1024); command=$4; for (i=5;i<=NF;i++) command=command " " $i; printf "HUSHELL|process|%s|%s|%s|%s\n", $1, $2, memory, command}'
-        if command -v nvidia-smi >/dev/null 2>&1; then
-          nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, 'NF>=5 {gpuIndex=$1; used=$(NF-2); total=$(NF-1); util=$NF; name=$2; for (i=3;i<=NF-3;i++) name=name "," $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpuIndex); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); gsub(/^[[:space:]]+|[[:space:]]+$/, "", used); gsub(/^[[:space:]]+|[[:space:]]+$/, "", total); gsub(/^[[:space:]]+|[[:space:]]+$/, "", util); gsub(/\|/, "/", name); printf "HUSHELL|gpu|%s|%s|%s|%s|%s\n", gpuIndex, name, used, total, util}'
-        fi
         if [ -r /proc/stat ]; then
           read _ u1 n1 s1 i1 w1 x1 y1 z1 rest < /proc/stat
-          net1=$(awk -F: 'NR>2 {name=$1; gsub(/ /,"",name); if (name=="lo") next; gsub(/^ +/, "", $2); split($2,a,/ +/); rx+=a[1]; tx+=a[9]} END {printf "%.0f %.0f", rx, tx}' /proc/net/dev)
           sleep 0.3
           read _ u2 n2 s2 i2 w2 x2 y2 z2 rest < /proc/stat
           total1=$((u1+n1+s1+i1+w1+x1+y1+z1)); total2=$((u2+n2+s2+i2+w2+x2+y2+z2))
           idle1=$((i1+w1)); idle2=$((i2+w2)); delta=$((total2-total1))
           if [ "$delta" -gt 0 ]; then awk -v d="$delta" -v idle="$((idle2-idle1))" 'BEGIN {printf "HUSHELL|cpuUsage|%.0f\n", 100*(d-idle)/d}'; fi
+        fi
+        fi
+        if [ "$monitor_disks" = 1 ]; then
+          if [ "$(uname -s)" = Darwin ]; then
+            df -Pk 2>/dev/null | awk 'NR>1 && $2>0 {printf "HUSHELL|mount|%s|darwin|%s|%.1f|%.1f\n", $1, $NF, $3/1048576, $2/1048576}'
+          else
+            df -PTk 2>/dev/null | awk 'NR>1 && $3>0 {printf "HUSHELL|mount|%s|%s|%s|%.1f|%.1f\n", $1, $2, $NF, $4/1048576, $3/1048576}'
+          fi
+        fi
+        if [ "$monitor_processes" = 1 ]; then
+        ps -eo pid=,pcpu=,rss=,comm= 2>/dev/null | sort -k2nr | head -5 | awk '{memory=$3>=1048576 ? sprintf("%.1fG",$3/1048576) : sprintf("%.0fM",$3/1024); command=$4; for (i=5;i<=NF;i++) command=command " " $i; printf "HUSHELL|process|%s|%s|%s|%s\n", $1, $2, memory, command}'
+        fi
+        if [ "$monitor_gpu" = 1 ]; then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+          nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, 'NF>=5 {gpuIndex=$1; used=$(NF-2); total=$(NF-1); util=$NF; name=$2; for (i=3;i<=NF-3;i++) name=name "," $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", gpuIndex); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); gsub(/^[[:space:]]+|[[:space:]]+$/, "", used); gsub(/^[[:space:]]+|[[:space:]]+$/, "", total); gsub(/^[[:space:]]+|[[:space:]]+$/, "", util); gsub(/\|/, "/", name); printf "HUSHELL|gpu|%s|%s|%s|%s|%s\n", gpuIndex, name, used, total, util}'
+        fi
+        fi
+        if [ "$monitor_network" = 1 ]; then
+        if [ -r /proc/stat ]; then
+          net1=$(awk -F: 'NR>2 {name=$1; gsub(/ /,"",name); if (name=="lo") next; gsub(/^ +/, "", $2); split($2,a,/ +/); rx+=a[1]; tx+=a[9]} END {printf "%.0f %.0f", rx, tx}' /proc/net/dev)
+          sleep 0.3
           net2=$(awk -F: 'NR>2 {name=$1; gsub(/ /,"",name); if (name=="lo") next; gsub(/^ +/, "", $2); split($2,a,/ +/); rx+=a[1]; tx+=a[9]} END {printf "%.0f %.0f", rx, tx}' /proc/net/dev)
           set -- $net1 $net2; awk -v rx1="$1" -v tx1="$2" -v rx2="$3" -v tx2="$4" 'BEGIN {printf "HUSHELL|network|%.0f|%.0f\n", (rx2-rx1)/0.3, (tx2-tx1)/0.3}'
         elif [ "$(uname -s)" = Darwin ]; then
@@ -162,9 +190,9 @@ enum SSHService {
           net2=$(netstat -ibn | awk '$3 ~ /^<Link/ && $1 !~ /^(lo|gif|stf)/ {rx+=$7; tx+=$10} END {printf "%.0f %.0f", rx, tx}')
           set -- $net1 $net2; awk -v rx1="$1" -v tx1="$2" -v rx2="$3" -v tx2="$4" 'BEGIN {printf "HUSHELL|network|%.0f|%.0f\n", (rx2-rx1)/0.3, (tx2-tx1)/0.3}'
         fi
+        fi
         """#
-        let args = options(for: profile) + ["-p", String(profile.port), profile.endpoint, "sh -c " + shellQuote(script)]
-        return HostStats(output: try run("/usr/bin/ssh", args: args, profile: profile))
+        return script
     }
 
     private static func shellQuote(_ value: String) -> String {

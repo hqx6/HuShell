@@ -5,13 +5,20 @@ struct HostMonitorView: View {
     @ObservedObject var tab: ConnectionTab
     var body: some View {
         HostMonitorContent(stats: tab.stats, host: tab.profile.host,
-                           connected: tab.connected, onRefresh: { tab.refresh() })
+                           connected: tab.connected, sections: tab.monitoredSections,
+                           onToggle: { tab.toggleMonitorSection($0) },
+                           onRefresh: { tab.refresh() })
     }
 }
 
 struct EmptyHostMonitorView: View {
+    @State private var sections = Set(HostMonitorSection.allCases)
     var body: some View {
-        HostMonitorContent(stats: HostStats(), host: "—", connected: false, onRefresh: {})
+        HostMonitorContent(stats: HostStats(), host: "—", connected: false,
+                           sections: sections, onToggle: { section in
+                               if sections.contains(section) { sections.remove(section) }
+                               else { sections.insert(section) }
+                           }, onRefresh: {})
     }
 }
 
@@ -19,12 +26,19 @@ private struct HostMonitorContent: View {
     let stats: HostStats
     let host: String
     let connected: Bool
+    let sections: Set<HostMonitorSection>
+    let onToggle: (HostMonitorSection) -> Void
     let onRefresh: () -> Void
     @State private var receiveHistory: [Double] = []
     @State private var sendHistory: [Double] = []
+    @State private var scrollMetrics = HostScrollMetrics()
+    @State private var hoveredSection: HostMonitorSection?
+    @State private var nativeScrollView: NSScrollView?
+    @State private var thumbDragStart: CGFloat?
 
 
     var body: some View {
+        GeometryReader { viewport in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
@@ -47,7 +61,8 @@ private struct HostMonitorContent: View {
                     .buttonStyle(.plain).foregroundStyle(.secondary).disabled(host == "—")
                 }
                 .font(.system(size: 11))
-                sectionTitle("系统信息")
+                sectionTitle("系统信息", section: .system)
+                if sections.contains(.system) {
 
                 HStack(spacing: 4) {
                     Text("运行").foregroundStyle(.secondary)
@@ -67,8 +82,10 @@ private struct HostMonitorContent: View {
                       detail: "\(stats.memoryUsed) / \(stats.memoryTotal) MB", tint: .orange)
                 usage("交换", value: stats.swapFraction * 100,
                       detail: "\(stats.swapUsed) / \(stats.swapTotal) MB", tint: .brown)
+                }
 
-                sectionTitle("进程")
+                sectionTitle("进程", section: .processes)
+                if sections.contains(.processes) {
                 HStack(spacing: 0) {
                     Text("内存").frame(width: 48, alignment: .trailing)
                     Text("CPU").frame(width: 51, alignment: .trailing)
@@ -89,8 +106,10 @@ private struct HostMonitorContent: View {
                     .background((Int(process.pid).map { $0 % 2 == 0 } == true) ? Color.secondary.opacity(0.045) : .clear)
                 }
                 if stats.processes.isEmpty { placeholder("连接后显示 CPU 占用最高的进程") }
+                }
 
-                sectionTitle("GPU")
+                sectionTitle("GPU", section: .gpu)
+                if sections.contains(.gpu) {
                 ForEach(stats.gpus) { gpu in
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 6) {
@@ -111,8 +130,10 @@ private struct HostMonitorContent: View {
                 if stats.gpus.isEmpty {
                     placeholder(connected ? "未检测到 NVIDIA GPU" : "连接后显示 GPU 信息")
                 }
+                }
 
-                sectionTitle("网络")
+                sectionTitle("网络", section: .network)
+                if sections.contains(.network) {
                 HStack {
                     Label("↓ \(rate(stats.networkReceive))", systemImage: "arrow.down")
                         .foregroundStyle(.green)
@@ -124,8 +145,10 @@ private struct HostMonitorContent: View {
                 .padding(.vertical, 5)
                 NetworkHistory(receive: receiveHistory, send: sendHistory)
                     .frame(height: 55)
+                }
 
-                sectionTitle("磁盘")
+                sectionTitle("磁盘", section: .disks)
+                if sections.contains(.disks) {
                 HStack {
                     Text("路径").frame(maxWidth: .infinity, alignment: .leading)
                     Text("已用 / 总量")
@@ -148,9 +171,55 @@ private struct HostMonitorContent: View {
                     .frame(height: 20)
                     Divider().opacity(0.35)
                 }
-                if stats.disks.isEmpty { placeholder("连接后显示磁盘挂载点") }
+                if stats.disks.isEmpty { placeholder(connected ? "未检测到物理磁盘" : "连接后显示物理磁盘") }
+                }
             }
             .padding(.horizontal, 11).padding(.top, 10).padding(.bottom, 18)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .background(HostScrollViewProbe { nativeScrollView = $0 })
+                        .onAppear {
+                            scrollMetrics = HostScrollMetrics(contentHeight: geometry.size.height,
+                                top: geometry.frame(in: .named("host-monitor-scroll")).minY)
+                        }
+                        .onChange(of: geometry.size.height) { _, height in
+                            scrollMetrics.contentHeight = height
+                        }
+                        .onChange(of: geometry.frame(in: .named("host-monitor-scroll")).minY) { _, top in
+                            scrollMetrics.top = top
+                        }
+                }
+            }
+        }
+        .coordinateSpace(name: "host-monitor-scroll")
+        .scrollIndicators(.hidden)
+        .overlay(alignment: .topTrailing) {
+            let height = viewport.size.height
+            let contentHeight = scrollMetrics.contentHeight
+            if contentHeight > height + 1 {
+                let trackHeight = max(height - 12, 1)
+                let thumbHeight = max(24, trackHeight * height / contentHeight)
+                let travel = max(trackHeight - thumbHeight, 0)
+                let progress = min(max(-scrollMetrics.top / max(contentHeight - height, 1), 0), 1)
+                Capsule().fill(Color.secondary.opacity(0.38))
+                    .frame(width: 3, height: thumbHeight)
+                    .frame(width: 12, height: thumbHeight, alignment: .trailing)
+                    .contentShape(Rectangle())
+                    .padding(.top, 6).padding(.trailing, 3)
+                    .offset(y: progress * travel)
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if thumbDragStart == nil { thumbDragStart = progress * travel }
+                            let next = min(max((thumbDragStart ?? 0) + value.translation.height, 0), travel)
+                            let target = next / max(travel, 1) * (contentHeight - height)
+                            guard let nativeScrollView else { return }
+                            nativeScrollView.contentView.scroll(to: NSPoint(x: 0, y: target))
+                            nativeScrollView.reflectScrolledClipView(nativeScrollView.contentView)
+                        }
+                        .onEnded { _ in thumbDragStart = nil })
+            }
+        }
         }
         .onChange(of: stats.networkReceive) { _, value in
             if let sample = Double(value) { receiveHistory = Array((receiveHistory + [max(sample, 0)]).suffix(28)) }
@@ -160,13 +229,25 @@ private struct HostMonitorContent: View {
         }
     }
 
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.system(size: 10, weight: .semibold))
-            .frame(maxWidth: .infinity, alignment: .center)
+    private func sectionTitle(_ title: String, section: HostMonitorSection) -> some View {
+        Button { onToggle(section) } label: {
+            HStack(spacing: 4) {
+                Spacer(minLength: 14)
+                Text(title).frame(maxWidth: .infinity, alignment: .center)
+                Image(systemName: sections.contains(section) ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 14)
+            }
+            .font(.system(size: 10, weight: .semibold))
             .frame(height: 24)
-            .background(Color.accentColor.opacity(0.065))
+            .contentShape(Rectangle())
+            .background(Color.accentColor.opacity(hoveredSection == section ? 0.12 : 0.065))
             .overlay(Rectangle().strokeBorder(Color.secondary.opacity(0.16), lineWidth: 0.5))
-            .padding(.top, 11).padding(.bottom, 8)
+        }
+        .buttonStyle(.plain)
+        .help(sections.contains(section) ? "收起\(title)，暂停更新" : "展开\(title)，恢复更新")
+        .onHover { hoveredSection = $0 ? section : nil }
+        .padding(.top, 11).padding(.bottom, sections.contains(section) ? 8 : 0)
     }
 
     private func usage(_ label: String, value: Double, detail: String, tint: Color) -> some View {
@@ -213,6 +294,43 @@ private struct HostMonitorContent: View {
     private func placeholder(_ message: String) -> some View {
         Text(message).font(.system(size: 10)).foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+    }
+}
+
+private struct HostScrollMetrics: Equatable {
+    var contentHeight: CGFloat = 0
+    var top: CGFloat = 0
+}
+
+private struct HostScrollViewProbe: NSViewRepresentable {
+    let onResolve: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ view: ProbeView, context: Context) {
+        view.onResolve = onResolve
+    }
+
+    final class ProbeView: NSView {
+        var onResolve: ((NSScrollView) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                var ancestor = self?.superview
+                while let view = ancestor {
+                    if let scrollView = view as? NSScrollView {
+                        self?.onResolve?(scrollView)
+                        return
+                    }
+                    ancestor = view.superview
+                }
+            }
+        }
     }
 }
 
