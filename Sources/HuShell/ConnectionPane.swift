@@ -162,11 +162,11 @@ struct ConnectionPane: View {
                 pathBar
                 Spacer()
                 if tab.busy || openingFile { ProgressView().controlSize(.small) }
-                Picker("视图", selection: $browserMode) {
-                    Image(systemName: "rectangle.split.3x1").tag(FileBrowserMode.columns)
-                    Image(systemName: "list.bullet").tag(FileBrowserMode.list)
+                HStack(spacing: 2) {
+                    viewModeButton(.columns, symbol: "rectangle.split.3x1", label: "分栏视图")
+                    viewModeButton(.list, symbol: "list.bullet", label: "列表视图")
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 104)
+                .padding(2)
                 .modifier(GlassSurface(radius: 9))
                 .help("切换分栏或列表视图")
                 Menu {
@@ -357,6 +357,18 @@ struct ConnectionPane: View {
             .modifier(GlassSurface(radius: 8))
             .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.4))
             .disabled(!enabled).help(help)
+    }
+
+    private func viewModeButton(_ mode: FileBrowserMode, symbol: String, label: String) -> some View {
+        Button { browserMode = mode } label: {
+            Image(systemName: symbol)
+                .frame(width: 46, height: 24)
+                .contentShape(RoundedRectangle(cornerRadius: 7))
+                .background(browserMode == mode ? Color.primary.opacity(0.12) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private func fileRow(_ file: RemoteFile) -> some View {
