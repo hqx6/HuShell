@@ -19,19 +19,18 @@ final class TransferCenterTests: XCTestCase {
         XCTAssertTrue(center.items.allSatisfy { $0.phase == .cancelled })
     }
 
-    func testEstimatedCompletionRequiresKnownSizeAndSpeed() {
-        let now = Date(timeIntervalSince1970: 1_000)
+    func testEstimatedRemainingSecondsRequiresKnownSizeAndSpeed() {
         var item = TransferRecord(id: UUID(), direction: .upload, profileName: "test",
                                   fileName: "file.txt", totalBytes: 1_000)
         item.phase = .running
         item.completedBytes = 400
         item.bytesPerSecond = 100
-        XCTAssertEqual(item.estimatedCompletion(at: now), now.addingTimeInterval(6))
+        XCTAssertEqual(item.estimatedRemainingSeconds(), 6)
         item.bytesPerSecond = 0
-        XCTAssertNil(item.estimatedCompletion(at: now))
+        XCTAssertNil(item.estimatedRemainingSeconds())
         item.bytesPerSecond = 100
         item.phase = .cancelled
-        XCTAssertNil(item.estimatedCompletion(at: now))
+        XCTAssertNil(item.estimatedRemainingSeconds())
     }
 
     func testCancellationStopsRunningProcess() async throws {

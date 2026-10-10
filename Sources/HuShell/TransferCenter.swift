@@ -34,11 +34,11 @@ struct TransferRecord: Identifiable {
         return min(max(Double(completedBytes) / Double(totalBytes), 0), 1)
     }
 
-    func estimatedCompletion(at now: Date = Date()) -> Date? {
+    func estimatedRemainingSeconds() -> Int? {
         guard phase == .running, totalBytes > completedBytes, bytesPerSecond > 1 else { return nil }
         let seconds = Double(totalBytes - completedBytes) / bytesPerSecond
         guard seconds.isFinite, seconds < 365 * 24 * 60 * 60 else { return nil }
-        return now.addingTimeInterval(seconds)
+        return max(Int(ceil(seconds)), 1)
     }
 }
 
@@ -241,8 +241,6 @@ struct TransferCenterView: View {
                 if item.phase == .running || item.phase == .waiting {
                     if let fraction = item.fraction { ProgressView(value: fraction) }
                     else { ProgressView() }
-                    Text(estimatedCompletionText(item))
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
                 } else if item.phase == .completed {
                     ProgressView(value: 1)
                 }
@@ -260,16 +258,27 @@ struct TransferCenterView: View {
         let speed = item.phase == .running || item.phase == .completed
             ? ByteCountFormatter.string(fromByteCount: Int64(item.bytesPerSecond), countStyle: .file) + "/s"
             : "—"
-        return "\(done) / \(total) · \(speed)"
+        let remaining = remainingText(item).map { " · \($0)" } ?? ""
+        return "\(done) / \(total) · \(speed)\(remaining)"
     }
 
-    private func estimatedCompletionText(_ item: TransferRecord) -> String {
-        if item.phase == .waiting { return "预计完成：等待开始" }
-        if item.totalBytes <= 0 { return "预计完成：文件大小未知" }
-        guard let date = item.estimatedCompletion() else { return "预计完成：计算中" }
-        let value = Calendar.current.isDateInToday(date)
-            ? date.formatted(.dateTime.hour().minute().second())
-            : date.formatted(.dateTime.month().day().hour().minute())
-        return "预计完成：\(value)"
+    private func remainingText(_ item: TransferRecord) -> String? {
+        if item.phase == .waiting { return "等待开始" }
+        guard item.phase == .running else { return nil }
+        guard item.totalBytes > 0 else { return "剩余未知" }
+        guard let seconds = item.estimatedRemainingSeconds() else { return "剩余计算中" }
+        if seconds >= 86_400 {
+            let hours = (seconds % 86_400) / 3_600
+            return "剩余约 \(seconds / 86_400)天" + (hours > 0 ? "\(hours)小时" : "")
+        }
+        if seconds >= 3_600 {
+            let minutes = (seconds % 3_600) / 60
+            return "剩余约 \(seconds / 3_600)小时" + (minutes > 0 ? "\(minutes)分" : "")
+        }
+        if seconds >= 60 {
+            let remainder = seconds % 60
+            return "剩余约 \(seconds / 60)分" + (remainder > 0 ? "\(remainder)秒" : "")
+        }
+        return "剩余约 \(seconds)秒"
     }
 }
