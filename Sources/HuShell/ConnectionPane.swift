@@ -140,9 +140,8 @@ struct ConnectionPane: View {
                     }
                 }
                 .help("单击路径节点跳转；双击输入或粘贴路径")
-                Button { beginPathEdit() } label: { Image(systemName: "pencil.line") }
+                Button { beginPathEdit() } label: { fileToolbarIcon("pencil.line") }
                     .buttonStyle(.plain)
-                    .frame(width: 28, height: 28)
                     .modifier(GlassSurface(radius: 8))
                     .help("输入远端路径")
             }
@@ -180,7 +179,7 @@ struct ConnectionPane: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "arrow.up.arrow.down").frame(width: 28, height: 28)
+                    fileToolbarIcon("arrow.up.arrow.down")
                 }
                 .buttonStyle(.plain)
                 .modifier(GlassSurface(radius: 8))
@@ -193,6 +192,8 @@ struct ConnectionPane: View {
                         }
                     }
                     .frame(minWidth: 28).frame(height: 28)
+                    .background(Color.primary.opacity(0.001), in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
                 .modifier(GlassSurface(radius: 8))
@@ -352,20 +353,27 @@ struct ConnectionPane: View {
     }
 
     private func fileButton(_ symbol: String, help: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).frame(width: 28, height: 28) }
+        Button(action: action) { fileToolbarIcon(symbol) }
             .buttonStyle(.plain)
             .modifier(GlassSurface(radius: 8))
             .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.4))
             .disabled(!enabled).help(help)
     }
 
+    private func fileToolbarIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .frame(width: 28, height: 28)
+            .background(Color.primary.opacity(0.001), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     private func viewModeButton(_ mode: FileBrowserMode, symbol: String, label: String) -> some View {
         Button { browserMode = mode } label: {
             Image(systemName: symbol)
                 .frame(width: 46, height: 24)
-                .contentShape(RoundedRectangle(cornerRadius: 7))
-                .background(browserMode == mode ? Color.primary.opacity(0.12) : Color.clear,
+                .background(browserMode == mode ? Color.primary.opacity(0.12) : Color.primary.opacity(0.001),
                             in: RoundedRectangle(cornerRadius: 7))
+                .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
