@@ -8,10 +8,36 @@
     html, body, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0e1b25; }
     #terminal { box-sizing: border-box; padding: 10px 11px; }
     .xterm-viewport { scrollbar-width: thin; }
+    #find {
+      position: absolute; z-index: 5; top: 11px; right: 17px;
+      display: flex; align-items: center; gap: 5px;
+      width: min(350px, calc(100% - 34px)); height: 34px;
+      padding: 0 6px 0 10px; box-sizing: border-box;
+      color: #d9e8eb; background: rgba(34, 49, 60, .96);
+      border: 1px solid rgba(168, 196, 207, .34); border-radius: 10px;
+      box-shadow: 0 7px 24px rgba(0, 0, 0, .34);
+      font: 11px -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    #find[hidden] { display: none; }
+    #find-input { min-width: 0; flex: 1; border: 0; outline: 0; color: inherit;
+      background: transparent; font: inherit; }
+    #find-input::placeholder { color: #9aabb3; }
+    #find-count { min-width: 30px; color: #a8bac2; white-space: nowrap; text-align: right; }
+    #find button { width: 25px; height: 25px; padding: 0; border: 0; border-radius: 6px;
+      color: #d9e8eb; background: transparent; font: 15px -apple-system, sans-serif; cursor: pointer; }
+    #find button:hover { background: rgba(255, 255, 255, .14); }
+    #find button:active { background: rgba(255, 255, 255, .25); }
   </style>
 </head>
 <body>
   <div id="terminal"></div>
+  <div id="find" hidden>
+    <input id="find-input" type="text" placeholder="查找终端内容" aria-label="查找终端内容" autocomplete="off" spellcheck="false">
+    <span id="find-count" aria-live="polite">0/0</span>
+    <button id="find-previous" type="button" title="上一个 (Shift-Return)" aria-label="上一个匹配">↑</button>
+    <button id="find-next" type="button" title="下一个 (Return)" aria-label="下一个匹配">↓</button>
+    <button id="find-close" type="button" title="关闭 (Esc)" aria-label="关闭查找">×</button>
+  </div>
   <script src="xterm.js"></script>
   <script src="addon-fit.js"></script>
   <script>
@@ -35,12 +61,114 @@
     terminal.open(document.getElementById('terminal'));
     terminal.onData(data => window.webkit.messageHandlers.input.postMessage(data));
     terminal.onResize(size => window.webkit.messageHandlers.resize.postMessage(size));
-    window.huAppend = text => terminal.write(text);
-    window.huClear = () => terminal.reset();
+    const find = document.getElementById('find');
+    const findInput = document.getElementById('find-input');
+    const findCount = document.getElementById('find-count');
+    let matches = [];
+    let currentMatch = -1;
+    let scanTimer;
+
+    function rowTextAndColumns(line) {
+      let text = '';
+      const columns = [];
+      const widths = [];
+      for (let column = 0; column < line.length; column++) {
+        const cell = line.getCell(column);
+        if (!cell || cell.getWidth() === 0) continue;
+        const chars = cell.getChars() || ' ';
+        for (let i = 0; i < chars.length; i++) {
+          columns.push(column);
+          widths.push(cell.getWidth());
+        }
+        text += chars;
+      }
+      return { text, columns, widths };
+    }
+
+    function showMatch(index) {
+      if (!matches.length) {
+        currentMatch = -1;
+        findCount.textContent = '0/0';
+        terminal.clearSelection();
+        return;
+      }
+      currentMatch = (index + matches.length) % matches.length;
+      const match = matches[currentMatch];
+      terminal.scrollToLine(match.row);
+      terminal.select(match.column, match.row, match.width);
+      findCount.textContent = `${currentMatch + 1}/${matches.length}`;
+    }
+
+    function scanMatches() {
+      matches = [];
+      currentMatch = -1;
+      const query = findInput.value.toLowerCase();
+      if (!query) { showMatch(-1); return; }
+      const buffer = terminal.buffer.active;
+      const visibleRow = buffer.viewportY;
+      for (let row = 0; row < buffer.length; row++) {
+        const line = buffer.getLine(row);
+        if (!line) continue;
+        const { text, columns, widths } = rowTextAndColumns(line);
+        const lower = text.toLowerCase();
+        for (let start = lower.indexOf(query); start !== -1; start = lower.indexOf(query, start + 1)) {
+          const end = start + query.length - 1;
+          matches.push({ row, column: columns[start],
+            width: columns[end] + widths[end] - columns[start] });
+        }
+      }
+      const nearest = matches.findIndex(match => match.row >= visibleRow);
+      showMatch(nearest < 0 ? 0 : nearest);
+    }
+
+    function scheduleScan() {
+      clearTimeout(scanTimer);
+      scanTimer = setTimeout(scanMatches, 60);
+    }
+
+    function openFind() {
+      find.hidden = false;
+      findInput.focus();
+      findInput.select();
+      if (findInput.value) scheduleScan();
+    }
+
+    function closeFind() {
+      clearTimeout(scanTimer);
+      find.hidden = true;
+      terminal.clearSelection();
+      terminal.focus();
+    }
+
+    window.huOpenFind = openFind;
+    window.huAppend = text => terminal.write(text, () => { if (!find.hidden && findInput.value) scheduleScan(); });
+    window.huClear = () => { terminal.reset(); if (!find.hidden) scheduleScan(); };
+    findInput.addEventListener('input', scheduleScan);
+    findInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault(); event.stopPropagation();
+        showMatch(currentMatch + (event.shiftKey ? -1 : 1));
+      } else if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); closeFind();
+      }
+    });
+    document.getElementById('find-previous').addEventListener('click', () => showMatch(currentMatch - 1));
+    document.getElementById('find-next').addEventListener('click', () => showMatch(currentMatch + 1));
+    document.getElementById('find-close').addEventListener('click', closeFind);
+    document.addEventListener('keydown', event => {
+      if (event.metaKey && !event.altKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); event.stopPropagation(); openFind();
+      } else if (event.metaKey && !event.altKey && event.key.toLowerCase() === 'g' && !find.hidden) {
+        event.preventDefault(); event.stopPropagation();
+        showMatch(currentMatch + (event.shiftKey ? -1 : 1));
+      }
+    }, true);
     const observer = new ResizeObserver(() => fit.fit());
     observer.observe(document.getElementById('terminal'));
     setTimeout(() => fit.fit(), 30);
-    document.addEventListener('mousedown', () => terminal.focus());
+    document.addEventListener('mousedown', event => {
+      if (!find.contains(event.target)) terminal.focus();
+    });
   </script>
 </body>
 </html>

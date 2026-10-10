@@ -7,6 +7,7 @@ import Foundation
     let transferCenter: TransferCenter
     @Published var connected = false
     @Published var terminalText = ""
+    @Published var findRequest = 0
     @Published var stats = HostStats()
     @Published var monitoredSections = Set(HostMonitorSection.allCases)
     @Published var files: [RemoteFile] = []
@@ -30,6 +31,8 @@ import Foundation
     private var directoryRequests: [String: UUID] = [:]
     private let directoryLoader: @Sendable (ConnectionProfile, String) async throws -> [RemoteFile]
     private var homeDirectory = "/"
+
+    func findInTerminal() { findRequest &+= 1 }
 
     init(profile: ConnectionProfile, transferCenter: TransferCenter,
          directoryLoader: @escaping @Sendable (ConnectionProfile, String) async throws -> [RemoteFile] = { profile, path in

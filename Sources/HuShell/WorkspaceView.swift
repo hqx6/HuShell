@@ -248,7 +248,8 @@ struct WorkspaceView: View {
             newConnection: { beginEditor(nil) },
             connect: { id in
                 if let profile = store.profiles.first(where: { $0.id == id }) { openConnection(profile) }
-            }
+            },
+            findTerminal: { selectedTab?.findInTerminal() }
         ))
         .sheet(item: $editorRequest, onDismiss: {
             if !waitingToCreateVault { connectAfterEditing = nil }

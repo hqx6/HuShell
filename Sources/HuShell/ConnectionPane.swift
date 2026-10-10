@@ -101,7 +101,8 @@ struct ConnectionPane: View {
     }
 
     private var terminalPanel: some View {
-        TerminalView(content: tab.terminalText, onInput: { tab.terminal.send($0) },
+        TerminalView(content: tab.terminalText, findRequest: tab.findRequest,
+                     onInput: { tab.terminal.send($0) },
                      onResize: { columns, rows in tab.terminal.resize(columns: columns, rows: rows) })
         .padding(.bottom, 14)
         .background(Color(red: 0.055, green: 0.105, blue: 0.145))

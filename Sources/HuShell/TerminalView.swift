@@ -1,8 +1,20 @@
 import SwiftUI
 import WebKit
 
+final class SearchableTerminalWebView: WKWebView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "f" {
+            evaluateJavaScript("window.huOpenFind?.()")
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 struct TerminalView: NSViewRepresentable {
     var content: String
+    var findRequest: Int
     var onInput: (String) -> Void
     var onResize: (Int, Int) -> Void
 
@@ -13,7 +25,7 @@ struct TerminalView: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.userContentController.add(context.coordinator, name: "input")
         configuration.userContentController.add(context.coordinator, name: "resize")
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = SearchableTerminalWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.webView = webView
@@ -29,6 +41,7 @@ struct TerminalView: NSViewRepresentable {
         context.coordinator.onInput = onInput
         context.coordinator.onResize = onResize
         context.coordinator.update(content)
+        context.coordinator.updateFindRequest(findRequest)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
@@ -38,6 +51,21 @@ struct TerminalView: NSViewRepresentable {
         private var ready = false
         private var delivered = ""
         private var pending = ""
+        private var lastFindRequest = 0
+        private var pendingFind = false
+
+        func updateFindRequest(_ request: Int) {
+            guard request != lastFindRequest else { return }
+            lastFindRequest = request
+            pendingFind = true
+            openPendingFind()
+        }
+
+        private func openPendingFind() {
+            guard ready, pendingFind, let webView else { return }
+            pendingFind = false
+            webView.evaluateJavaScript("window.huOpenFind()")
+        }
 
         func update(_ content: String) {
             pending = content
@@ -56,6 +84,7 @@ struct TerminalView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             ready = true
             update(pending)
+            openPendingFind()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

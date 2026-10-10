@@ -31,6 +31,7 @@ import AppKit
         .commands {
             CommandGroup(replacing: .newItem) { }
             ConnectionCommands(store: store)
+            TerminalCommands()
         }
     }
 }
@@ -61,6 +62,18 @@ struct WorkspaceMenuActions {
     let showLibrary: () -> Void
     let newConnection: () -> Void
     let connect: (UUID) -> Void
+    let findTerminal: () -> Void
+}
+
+private struct TerminalCommands: Commands {
+    @FocusedValue(\.workspaceMenuActions) private var actions
+
+    var body: some Commands {
+        CommandMenu("终端") {
+            Button("查找终端…") { actions?.findTerminal() }
+                .keyboardShortcut("f", modifiers: .command)
+        }
+    }
 }
 
 private struct WorkspaceMenuActionsKey: FocusedValueKey {
