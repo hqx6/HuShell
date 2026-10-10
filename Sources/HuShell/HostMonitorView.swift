@@ -178,7 +178,9 @@ private struct HostMonitorContent: View {
             .background {
                 GeometryReader { geometry in
                     Color.clear
-                        .background(HostScrollViewProbe { nativeScrollView = $0 })
+                        .background(HostScrollViewProbe { scrollView in
+                            if nativeScrollView !== scrollView { nativeScrollView = scrollView }
+                        })
                         .onAppear {
                             scrollMetrics = HostScrollMetrics(contentHeight: geometry.size.height,
                                 top: geometry.frame(in: .named("host-monitor-scroll")).minY)
@@ -313,6 +315,7 @@ private struct HostScrollViewProbe: NSViewRepresentable {
 
     func updateNSView(_ view: ProbeView, context: Context) {
         view.onResolve = onResolve
+        view.scheduleResolve()
     }
 
     final class ProbeView: NSView {
@@ -320,10 +323,16 @@ private struct HostScrollViewProbe: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            scheduleResolve()
+        }
+
+        func scheduleResolve() {
             DispatchQueue.main.async { [weak self] in
                 var ancestor = self?.superview
                 while let view = ancestor {
                     if let scrollView = view as? NSScrollView {
+                        scrollView.hasVerticalScroller = false
+                        scrollView.verticalScroller?.isHidden = true
                         self?.onResolve?(scrollView)
                         return
                     }
