@@ -213,6 +213,7 @@ struct TransferCenterView: View {
             }
         }
         .frame(width: 470, height: 420)
+        .background(Color(nsColor: NSColor.windowBackgroundColor.withAlphaComponent(1)))
     }
 
     private func transferRow(_ item: TransferRecord) -> some View {
