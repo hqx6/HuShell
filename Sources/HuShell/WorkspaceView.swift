@@ -169,6 +169,7 @@ struct WorkspaceView: View {
     @State private var vaultPromptMode: VaultPromptView.Mode = .migrate
     @State private var pendingVaultAction: (() -> Void)?
     @State private var connectAfterEditing: UUID?
+    @State private var pendingTransferReveal: (profile: ConnectionProfile, path: String)?
     @State private var waitingToCreateVault = false
     @State private var errorMessage: String?
     @State private var showsSidebar = true
@@ -252,7 +253,10 @@ struct WorkspaceView: View {
             findTerminal: { selectedTab?.findInTerminal() }
         ))
         .sheet(item: $editorRequest, onDismiss: {
-            if !waitingToCreateVault { connectAfterEditing = nil }
+            if !waitingToCreateVault {
+                connectAfterEditing = nil
+                pendingTransferReveal = nil
+            }
         }) { request in
             ProfileEditor(profile: request.profile,
                           existingPassword: request.profile.map { (try? LocalCredentialVault.shared.hasPassword(for: $0.id)) ?? false } ?? false,
@@ -343,7 +347,8 @@ struct WorkspaceView: View {
         VStack(spacing: 0) {
             if let selectedTab {
                 ConnectionPane(tab: selectedTab, showsFiles: showsFiles,
-                               filePanelPosition: filePanelPosition).id(selectedTab.id)
+                               filePanelPosition: filePanelPosition,
+                               onOpenTransferRemote: revealTransferRemote).id(selectedTab.id)
             } else {
                 ConnectionLibraryView(store: store,
                                       activeCount: { id in connectionTabs.filter { $0.profile.id == id }.count },
@@ -491,8 +496,11 @@ struct WorkspaceView: View {
             try store.save(profile, password: password)
             editorRequest = nil
             if connectAfterEditing == profile.id {
+                let revealPath = pendingTransferReveal?.profile.matchesConnection(profile) == true
+                    ? pendingTransferReveal?.path : nil
                 connectAfterEditing = nil
-                DispatchQueue.main.async { openUnlockedConnection(profile) }
+                pendingTransferReveal = nil
+                DispatchQueue.main.async { openUnlockedConnection(profile, revealPath: revealPath) }
             }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -501,9 +509,26 @@ struct WorkspaceView: View {
         runAfterMigration { openUnlockedConnection(profile) }
     }
 
-    private func openUnlockedConnection(_ profile: ConnectionProfile) {
+    private func revealTransferRemote(profile: ConnectionProfile, path: String) {
+        showsFiles = true
+        if let tab = connectionTabs.first(where: { profile.matchesConnection($0.profile) && $0.connected })
+            ?? connectionTabs.first(where: { profile.matchesConnection($0.profile) }) {
+            selectedTabID = tab.id
+            if !tab.connected { tab.connect() }
+            tab.revealDirectory(path)
+            return
+        }
+        guard let currentProfile = store.profiles.first(where: profile.matchesConnection) else {
+            errorMessage = "原连接已删除或修改，无法打开远端目录"
+            return
+        }
+        runAfterMigration { openUnlockedConnection(currentProfile, revealPath: path) }
+    }
+
+    private func openUnlockedConnection(_ profile: ConnectionProfile, revealPath: String? = nil) {
         if profile.usesPassword && ((try? LocalCredentialVault.shared.hasPassword(for: profile.id)) != true) {
             connectAfterEditing = profile.id
+            if let revealPath { pendingTransferReveal = (profile, revealPath) }
             editorRequest = EditorRequest(profile: profile)
             return
         }
@@ -517,6 +542,7 @@ struct WorkspaceView: View {
         }
         selectedTabID = tab.id
         tab.connect()
+        if let revealPath { tab.revealDirectory(revealPath) }
     }
 
     private func duplicateTab(_ original: ConnectionTab) {

@@ -31,6 +31,8 @@ import Foundation
     private var directoryRequests: [String: UUID] = [:]
     private let directoryLoader: @Sendable (ConnectionProfile, String) async throws -> [RemoteFile]
     private var homeDirectory = "/"
+    private var homeDirectoryReady = false
+    private var pendingRevealDirectory: String?
 
     func findInTerminal() { findRequest &+= 1 }
 
@@ -100,6 +102,8 @@ import Foundation
         loadingDirectories.removeAll()
         directoryErrors.removeAll()
         statsLoading = false
+        homeDirectoryReady = false
+        pendingRevealDirectory = nil
         terminal.stop()
         connected = false
         status = "未连接"
@@ -195,13 +199,23 @@ import Foundation
             let result = await Task.detached { Result { try SSHService.workingDirectory(profile: profile) } }.value
             guard let self, self.generation == generation else { return }
             self.busy = false
+            self.homeDirectoryReady = true
+            let revealDirectory = self.pendingRevealDirectory
+            self.pendingRevealDirectory = nil
             switch result {
             case .success(let path):
                 self.homeDirectory = path
-                self.goToDirectory(path)
-            case .failure(let error): self.errorMessage = error.localizedDescription
+                self.goToDirectory(revealDirectory ?? path)
+            case .failure(let error):
+                if let revealDirectory { self.goToDirectory(revealDirectory) }
+                else { self.errorMessage = error.localizedDescription }
             }
         }
+    }
+
+    func revealDirectory(_ path: String) {
+        if connected { goToDirectory(path) }
+        if !homeDirectoryReady { pendingRevealDirectory = path }
     }
 
     func navigate(_ name: String) {

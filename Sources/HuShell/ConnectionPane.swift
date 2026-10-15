@@ -19,6 +19,7 @@ struct ConnectionPane: View {
     @ObservedObject private var transferCenter: TransferCenter
     let showsFiles: Bool
     let filePanelPosition: FilePanelPosition
+    let onOpenTransferRemote: (ConnectionProfile, String) -> Void
     @State private var showsNewFolder = false
     @State private var newFolderName = ""
     @State private var browserMode: FileBrowserMode = .list
@@ -38,11 +39,13 @@ struct ConnectionPane: View {
     @State private var deleteRequest: DeleteRequest?
     @State private var openingFile = false
 
-    init(tab: ConnectionTab, showsFiles: Bool, filePanelPosition: FilePanelPosition) {
+    init(tab: ConnectionTab, showsFiles: Bool, filePanelPosition: FilePanelPosition,
+         onOpenTransferRemote: @escaping (ConnectionProfile, String) -> Void) {
         _tab = ObservedObject(wrappedValue: tab)
         _transferCenter = ObservedObject(wrappedValue: tab.transferCenter)
         self.showsFiles = showsFiles
         self.filePanelPosition = filePanelPosition
+        self.onOpenTransferRemote = onOpenTransferRemote
     }
 
     var body: some View {
@@ -200,7 +203,12 @@ struct ConnectionPane: View {
                 .modifier(GlassSurface(radius: 8))
                 .help("上传与下载列表")
                 .accessibilityLabel("传输列表")
-                .popover(isPresented: $showsTransfers) { TransferCenterView(center: transferCenter) }
+                .popover(isPresented: $showsTransfers) {
+                    TransferCenterView(center: transferCenter) { profile, path in
+                        showsTransfers = false
+                        onOpenTransferRemote(profile, path)
+                    }
+                }
                 fileButton("arrow.up.doc", help: "上传文件", enabled: tab.connected && !tab.busy, action: upload)
                 fileButton("arrow.down.doc", help: "下载选中文件", enabled: tab.connected && tab.selectedFile != nil && !tab.busy, action: downloadSelected)
                 fileButton("folder.badge.plus", help: "新建文件夹", enabled: tab.connected && !tab.busy) {

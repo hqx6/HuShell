@@ -77,6 +77,17 @@ final class DirectoryNavigationTests: XCTestCase {
         XCTAssertFalse(tab.busy)
     }
 
+    @MainActor func testRevealTransferDirectoryChangesVisiblePathImmediately() async {
+        let responses = DirectoryResponses()
+        let tab = tab(responses)
+        tab.revealDirectory("/srv/data")
+        XCTAssertEqual(tab.directory, "/srv/data")
+        await waitUntil { await responses.counts["/srv/data"] == 1 }
+        await responses.finish("/srv/data", name: "uploaded.txt")
+        await waitUntil { !tab.busy }
+        XCTAssertEqual(tab.files.first?.name, "uploaded.txt")
+    }
+
     @MainActor func testRefreshIgnoresSupersededResponseAndDisconnectClearsCache() async {
         let responses = DirectoryResponses()
         let tab = tab(responses)

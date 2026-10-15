@@ -14,11 +14,17 @@ enum TransferPhase: String {
     case cancelled = "已终止"
 }
 
+enum TransferDestination {
+    case remote(profile: ConnectionProfile, filePath: String)
+    case local(fileURL: URL)
+}
+
 struct TransferRecord: Identifiable {
     let id: UUID
     let direction: TransferDirection
     let profileName: String
     let fileName: String
+    let destination: TransferDestination
     let totalBytes: Int64
     var completedBytes: Int64 = 0
     var bytesPerSecond: Double = 0
@@ -51,7 +57,8 @@ struct TransferRecord: Identifiable {
     func upload(profile: ConnectionProfile, local: URL, remote: String,
                 completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         let size = ((try? FileManager.default.attributesOfItem(atPath: local.path)[.size]) as? NSNumber)?.int64Value ?? 0
-        let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent, totalBytes: size)
+        let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent,
+                     destination: .remote(profile: profile, filePath: remote), totalBytes: size)
         start(id: id, profile: profile, monitor: .remote(remote),
               operation: { cancellation in
                   try SSHService.upload(profile: profile, local: local, remote: remote, cancellation: cancellation)
@@ -62,7 +69,7 @@ struct TransferRecord: Identifiable {
     func download(profile: ConnectionProfile, file: RemoteFile, remote: String, local: URL,
                   completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         let id = add(direction: .download, profile: profile, fileName: file.name,
-                     totalBytes: Int64(file.size) ?? 0)
+                     destination: .local(fileURL: local), totalBytes: Int64(file.size) ?? 0)
         start(id: id, profile: profile, monitor: .local(local),
               operation: { cancellation in
                   try SSHService.download(profile: profile, remote: remote, local: local, cancellation: cancellation)
@@ -91,10 +98,10 @@ struct TransferRecord: Identifiable {
     }
 
     private func add(direction: TransferDirection, profile: ConnectionProfile,
-                     fileName: String, totalBytes: Int64) -> UUID {
+                     fileName: String, destination: TransferDestination, totalBytes: Int64) -> UUID {
         let id = UUID()
         items.insert(TransferRecord(id: id, direction: direction, profileName: profile.name,
-                                    fileName: fileName, totalBytes: totalBytes), at: 0)
+                                    fileName: fileName, destination: destination, totalBytes: totalBytes), at: 0)
         return id
     }
 
@@ -182,6 +189,9 @@ private extension Result where Success == Void {
 
 struct TransferCenterView: View {
     @ObservedObject var center: TransferCenter
+    let onOpenRemote: (ConnectionProfile, String) -> Void
+    @State private var locationError: String?
+    @State private var hoveredItem: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -214,43 +224,79 @@ struct TransferCenterView: View {
         }
         .frame(width: 470, height: 420)
         .background(Color(nsColor: NSColor.windowBackgroundColor.withAlphaComponent(1)))
+        .alert("无法打开所在目录", isPresented: Binding(get: { locationError != nil },
+                                                set: { if !$0 { locationError = nil } })) {
+            Button("好", role: .cancel) { locationError = nil }
+        } message: { Text(locationError ?? "") }
     }
 
     private func transferRow(_ item: TransferRecord) -> some View {
         HStack(alignment: .top, spacing: 11) {
-            Image(systemName: item.direction == .upload ? "arrow.up.doc" : "arrow.down.doc")
-                .foregroundStyle(item.phase == .failed ? Color.red : Color.accentColor)
-                .frame(width: 31, height: 31)
-                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(item.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    Spacer()
-                    Text(item.phase.rawValue).foregroundStyle(item.phase == .failed ? .red : .secondary)
-                    if item.phase == .running || item.phase == .waiting {
-                        Button("终止") { center.cancel(item.id) }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("终止 \(item.fileName)")
+            Button { openLocation(of: item) } label: {
+                HStack(alignment: .top, spacing: 11) {
+                    Image(systemName: item.direction == .upload ? "arrow.up.doc" : "arrow.down.doc")
+                        .foregroundStyle(item.phase == .failed ? Color.red : Color.accentColor)
+                        .frame(width: 31, height: 31)
+                        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(item.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Spacer()
+                            Text(item.phase.rawValue).foregroundStyle(item.phase == .failed ? .red : .secondary)
+                            Image(systemName: "folder").foregroundStyle(.secondary)
+                                .font(.system(size: 10))
+                        }
+                        HStack {
+                            Text("\(item.direction.rawValue) · \(item.profileName)")
+                            Spacer()
+                            Text(progressText(item)).lineLimit(1)
+                        }
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        if item.phase == .running || item.phase == .waiting {
+                            if let fraction = item.fraction { ProgressView(value: fraction) }
+                            else { ProgressView() }
+                        } else if item.phase == .completed {
+                            ProgressView(value: 1)
+                        }
+                        if let error = item.error {
+                            Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                        }
                     }
                 }
-                HStack {
-                    Text("\(item.direction.rawValue) · \(item.profileName)")
-                    Spacer()
-                    Text(progressText(item))
-                }
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-                if item.phase == .running || item.phase == .waiting {
-                    if let fraction = item.fraction { ProgressView(value: fraction) }
-                    else { ProgressView() }
-                } else if item.phase == .completed {
-                    ProgressView(value: 1)
-                }
-                if let error = item.error {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("打开文件所在目录")
+            .accessibilityLabel("打开 \(item.fileName) 所在目录")
+            if item.phase == .running || item.phase == .waiting {
+                Button("终止") { center.cancel(item.id) }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("终止 \(item.fileName)")
+                    .padding(.top, 4)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(hoveredItem == item.id ? Color.accentColor.opacity(0.07) : .clear)
+        .onHover { hoveredItem = $0 ? item.id : nil }
+    }
+
+    private func openLocation(of item: TransferRecord) {
+        switch item.destination {
+        case .remote(let profile, let filePath):
+            onOpenRemote(profile, RemotePath.parent(filePath))
+        case .local(let fileURL):
+            let directory = fileURL.deletingLastPathComponent()
+            guard FileManager.default.fileExists(atPath: directory.path) else {
+                locationError = "本地目录已不存在：\(directory.path)"
+                return
+            }
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            } else if !NSWorkspace.shared.open(directory) {
+                locationError = "无法打开本地目录：\(directory.path)"
+            }
+        }
     }
 
     private func progressText(_ item: TransferRecord) -> String {

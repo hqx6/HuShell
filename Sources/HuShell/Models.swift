@@ -12,6 +12,11 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var importSourceID: String? = nil
 
     var endpoint: String { "\(username)@\(host)" }
+
+    func matchesConnection(_ other: ConnectionProfile) -> Bool {
+        id == other.id && host == other.host && port == other.port && username == other.username
+            && identityFile == other.identityFile && usesPassword == other.usesPassword
+    }
 }
 
 enum ProfileValidation {
