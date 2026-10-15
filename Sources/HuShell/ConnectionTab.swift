@@ -9,7 +9,7 @@ import Foundation
     @Published var terminalText = ""
     @Published var findRequest = 0
     @Published var stats = HostStats()
-    @Published var monitoredSections = Set(HostMonitorSection.allCases)
+    @Published var monitoredSections = HostMonitorSection.defaultExpanded
     @Published var files: [RemoteFile] = []
     @Published var columns: [RemoteColumn] = []
     @Published var directory = "/"

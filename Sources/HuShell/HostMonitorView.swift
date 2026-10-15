@@ -12,7 +12,7 @@ struct HostMonitorView: View {
 }
 
 struct EmptyHostMonitorView: View {
-    @State private var sections = Set(HostMonitorSection.allCases)
+    @State private var sections = HostMonitorSection.defaultExpanded
     var body: some View {
         HostMonitorContent(stats: HostStats(), host: "—", connected: false,
                            sections: sections, onToggle: { section in

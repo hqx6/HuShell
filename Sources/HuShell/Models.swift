@@ -40,6 +40,10 @@ struct RemoteFile: Identifiable, Hashable {
 
 enum HostMonitorSection: String, CaseIterable, Hashable, Sendable {
     case system, processes, gpu, network, disks
+
+    static var defaultExpanded: Set<HostMonitorSection> {
+        Set(allCases).subtracting([.gpu])
+    }
 }
 
 struct HostStats {

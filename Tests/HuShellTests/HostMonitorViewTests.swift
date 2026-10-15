@@ -5,6 +5,18 @@ import XCTest
 
 @MainActor
 final class HostMonitorViewTests: XCTestCase {
+    func testGPUAndNPUStartCollapsedAndCanBeExpanded() {
+        let tab = ConnectionTab(profile: ConnectionProfile(name: "test", host: "localhost", username: "test"),
+                                transferCenter: TransferCenter())
+        XCTAssertFalse(tab.monitoredSections.contains(.gpu))
+        XCTAssertEqual(tab.monitoredSections, Set(HostMonitorSection.allCases).subtracting([.gpu]))
+
+        tab.toggleMonitorSection(.gpu)
+        XCTAssertTrue(tab.monitoredSections.contains(.gpu))
+        tab.toggleMonitorSection(.gpu)
+        XCTAssertFalse(tab.monitoredSections.contains(.gpu))
+    }
+
     func testSidebarUsesOnlyThinCustomScrollbarAndRemainsScrollable() throws {
         let frame = NSRect(x: 0, y: 0, width: 335, height: 180)
         let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
