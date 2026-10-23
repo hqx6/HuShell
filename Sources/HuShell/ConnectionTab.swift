@@ -12,7 +12,7 @@ struct SudoChallenge: Identifiable {
     let terminal = TerminalSession()
     let transferCenter: TransferCenter
     @Published var connected = false
-    @Published var terminalText = ""
+    @Published var terminalOutput = TerminalOutput()
     @Published var findRequest = 0
     @Published var stats = HostStats()
     @Published var monitoredSections = HostMonitorSection.defaultExpanded
@@ -59,7 +59,7 @@ struct SudoChallenge: Identifiable {
         disconnect()
         onConnect?()
         generation += 1
-        terminalText = "正在连接 \(profile.endpoint)…\r\n"
+        terminalOutput.reset("正在连接 \(profile.endpoint)…\r\n")
         status = "正在连接"
         let generation = generation
         let profile = profile
@@ -78,15 +78,14 @@ struct SudoChallenge: Identifiable {
     private func startPreparedConnection() {
         terminal.onOutput = { [weak self] output in
             guard let self else { return }
-            self.terminalText += output
-            if self.terminalText.count > 250_000 { self.terminalText = String(self.terminalText.suffix(200_000)) }
+            self.terminalOutput.append(output)
             if self.connected { self.status = "已连接" }
         }
         terminal.onExit = { [weak self] code in
             guard let self else { return }
             self.connected = false
             self.status = "连接已断开"
-            self.terminalText += "\r\n[连接结束，状态码 \(code)]\r\n"
+            self.terminalOutput.append("\r\n[连接结束，状态码 \(code)]\r\n")
         }
         do {
             try terminal.start(profile: profile)

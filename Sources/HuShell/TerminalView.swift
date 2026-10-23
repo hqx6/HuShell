@@ -13,7 +13,7 @@ final class SearchableTerminalWebView: WKWebView {
 }
 
 struct TerminalView: NSViewRepresentable {
-    var content: String
+    var output: TerminalOutput
     var findRequest: Int
     var onInput: (String) -> Void
     var onResize: (Int, Int) -> Void
@@ -40,7 +40,8 @@ struct TerminalView: NSViewRepresentable {
     func updateNSView(_ view: WKWebView, context: Context) {
         context.coordinator.onInput = onInput
         context.coordinator.onResize = onResize
-        context.coordinator.update(content)
+        context.coordinator.deliverPendingResize()
+        context.coordinator.update(output)
         context.coordinator.updateFindRequest(findRequest)
     }
 
@@ -49,8 +50,10 @@ struct TerminalView: NSViewRepresentable {
         var onInput: ((String) -> Void)?
         var onResize: ((Int, Int) -> Void)?
         private var ready = false
-        private var delivered = ""
-        private var pending = ""
+        private var delivery = TerminalOutputDelivery()
+        private var pending = TerminalOutput()
+        private var reportedSize: (Int, Int)?
+        private var deliveredSize: (Int, Int)?
         private var lastFindRequest = 0
         private var pendingFind = false
 
@@ -67,31 +70,36 @@ struct TerminalView: NSViewRepresentable {
             webView.evaluateJavaScript("window.huOpenFind()")
         }
 
-        func update(_ content: String) {
-            pending = content
+        func update(_ output: TerminalOutput) {
+            pending = output
             guard ready, let webView else { return }
-            if !content.hasPrefix(delivered) {
-                webView.evaluateJavaScript("window.huClear()")
-                delivered = ""
-            }
-            let delta = String(content.dropFirst(delivered.count))
-            guard !delta.isEmpty else { return }
-            delivered = content
-            let argument = String(decoding: try! JSONEncoder().encode(delta), as: UTF8.self)
-            webView.evaluateJavaScript("window.huAppend(\(argument))")
+            let next = delivery.consume(output)
+            guard next.clear || !next.text.isEmpty else { return }
+            let argument = String(decoding: try! JSONEncoder().encode(next.text), as: UTF8.self)
+            webView.evaluateJavaScript((next.clear ? "window.huClear(); " : "") + "window.huAppend(\(argument))")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             ready = true
+            delivery = TerminalOutputDelivery()
             update(pending)
+            webView.evaluateJavaScript("window.huFit?.()")
             openPendingFind()
+        }
+
+        func deliverPendingResize() {
+            guard let reportedSize, let onResize,
+                  deliveredSize.map({ $0.0 == reportedSize.0 && $0.1 == reportedSize.1 }) != true else { return }
+            deliveredSize = reportedSize
+            onResize(reportedSize.0, reportedSize.1)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "input", let text = message.body as? String { onInput?(text) }
             if message.name == "resize", let dimensions = message.body as? [String: Int],
                let columns = dimensions["cols"], let rows = dimensions["rows"] {
-                onResize?(columns, rows)
+                reportedSize = (columns, rows)
+                deliverPendingResize()
             }
         }
     }

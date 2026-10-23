@@ -39,6 +39,11 @@ final class TerminalSearchTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         XCTAssertEqual(try evaluate("typeof window.huOpenFind") as? String, "function")
+        XCTAssertEqual(try evaluate("typeof window.huFit") as? String, "function")
+        _ = try evaluate("window.huFit(); true")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(inputHandler.lastSize?["cols"], try evaluate("terminal.cols") as? Int)
+        XCTAssertEqual(inputHandler.lastSize?["rows"], try evaluate("terminal.rows") as? Int)
         _ = try evaluate("window.huAppend('alpha first\\r\\nbeta\\r\\nalpha second\\r\\n' + Array(80).fill('later').join('\\r\\n') + '\\r\\n')")
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         let bottomViewport = try XCTUnwrap(try evaluate("terminal.buffer.active.viewportY") as? Int)
@@ -71,8 +76,10 @@ final class TerminalSearchTests: XCTestCase {
 
 private final class InputHandler: NSObject, WKScriptMessageHandler {
     let onInput: () -> Void
+    var lastSize: [String: Int]?
     init(onInput: @escaping () -> Void) { self.onInput = onInput }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "input" { onInput() }
+        if message.name == "resize" { lastSize = message.body as? [String: Int] }
     }
 }

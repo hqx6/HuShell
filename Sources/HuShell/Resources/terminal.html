@@ -163,9 +163,17 @@
         showMatch(currentMatch + (event.shiftKey ? -1 : 1));
       }
     }, true);
-    const observer = new ResizeObserver(() => fit.fit());
+    function fitAndReportSize() {
+      const bounds = document.getElementById('terminal').getBoundingClientRect();
+      if (bounds.width < 20 || bounds.height < 20) return;
+      fit.fit();
+      window.webkit.messageHandlers.resize.postMessage({ cols: terminal.cols, rows: terminal.rows });
+    }
+    window.huFit = fitAndReportSize;
+    const observer = new ResizeObserver(fitAndReportSize);
     observer.observe(document.getElementById('terminal'));
-    setTimeout(() => fit.fit(), 30);
+    setTimeout(fitAndReportSize, 30);
+    document.fonts.ready.then(fitAndReportSize);
     document.addEventListener('mousedown', event => {
       if (!find.contains(event.target)) terminal.focus();
     });

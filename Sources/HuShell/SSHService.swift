@@ -578,12 +578,22 @@ final class TerminalSession {
     private var process: Process?
     private var master: Int32 = -1
     private var generation = 0
+    private(set) var columns = 80
+    private(set) var rows = 24
+
+    private var windowSize: winsize {
+        winsize(ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: columns),
+                ws_xpixel: 0, ws_ypixel: 0)
+    }
 
     func start(profile: ConnectionProfile) throws {
         stop()
         var masterFD: Int32 = -1
         var slaveFD: Int32 = -1
-        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else { throw SSHError.launch("无法创建伪终端") }
+        var initialSize = windowSize
+        guard openpty(&masterFD, &slaveFD, nil, nil, &initialSize) == 0 else {
+            throw SSHError.launch("无法创建伪终端")
+        }
         master = masterFD
         let slave = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: false)
         let process = Process()
@@ -637,9 +647,15 @@ final class TerminalSession {
     }
 
     func resize(columns: Int, rows: Int) {
-        guard master >= 0, columns > 0, rows > 0 else { return }
-        var size = winsize(ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: columns), ws_xpixel: 0, ws_ypixel: 0)
+        guard columns > 0, rows > 0 else { return }
+        self.columns = columns
+        self.rows = rows
+        guard master >= 0 else { return }
+        var size = windowSize
         _ = ioctl(master, TIOCSWINSZ, &size)
+        // Process uses a PTY slave as stdio but may not own its controlling
+        // terminal. Notify ssh directly so it forwards the new size remotely.
+        if let process, process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGWINCH) }
     }
 
     func stop() {

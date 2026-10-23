@@ -113,7 +113,7 @@ struct ConnectionPane: View {
     }
 
     private var terminalPanel: some View {
-        TerminalView(content: tab.terminalText, findRequest: tab.findRequest,
+        TerminalView(output: tab.terminalOutput, findRequest: tab.findRequest,
                      onInput: { tab.terminal.send($0) },
                      onResize: { columns, rows in tab.terminal.resize(columns: columns, rows: rows) })
         .padding(.bottom, 14)
