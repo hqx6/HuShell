@@ -14,6 +14,11 @@ private struct DeleteRequest {
     let fast: Bool
 }
 
+private struct RenameTarget {
+    let file: RemoteFile
+    let directory: String
+}
+
 struct ConnectionPane: View {
     @ObservedObject var tab: ConnectionTab
     @ObservedObject private var transferCenter: TransferCenter
@@ -32,8 +37,9 @@ struct ConnectionPane: View {
     @FocusState private var pathFocused: Bool
     @State private var newFileName = ""
     @State private var showsNewFile = false
-    @State private var renameFile: RemoteFile?
+    @State private var renameTarget: RenameTarget?
     @State private var renameName = ""
+    @FocusState private var renameFocused: Bool
     @State private var permissionsFile: RemoteFile?
     @State private var permissionsMode = ""
     @State private var deleteRequest: DeleteRequest?
@@ -80,11 +86,6 @@ struct ConnectionPane: View {
             Button("创建") { tab.createFile(newFileName) }
             Button("取消", role: .cancel) { }
         } message: { Text("将在当前远端目录中创建空文件") }
-        .alert("重命名", isPresented: Binding(get: { renameFile != nil }, set: { if !$0 { renameFile = nil } })) {
-            TextField("新名称", text: $renameName)
-            Button("保存") { if let file = renameFile { tab.rename(file, to: renameName) }; renameFile = nil }
-            Button("取消", role: .cancel) { renameFile = nil }
-        } message: { Text(renameFile?.name ?? "") }
         .alert("文件权限", isPresented: Binding(get: { permissionsFile != nil }, set: { if !$0 { permissionsFile = nil } })) {
             TextField("例如 644", text: $permissionsMode)
             Button("应用") { if let file = permissionsFile { tab.changePermissions(file, mode: permissionsMode) }; permissionsFile = nil }
@@ -153,7 +154,7 @@ struct ConnectionPane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if editingPath {
-                PathEditOutsideClickObserver { endPathEdit() }
+                OutsideClickObserver { endPathEdit() }
                     .allowsHitTesting(false)
             }
         }
@@ -335,23 +336,28 @@ struct ConnectionPane: View {
     }
 
     private func columnRow(_ file: RemoteFile, index: Int, selected: Bool) -> some View {
-        HStack(spacing: 8) {
+        let directory = tab.columns[index].path
+        return HStack(spacing: 8) {
             Image(systemName: file.isDirectory ? "folder.fill" : "doc.text")
                 .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
                 .frame(width: 17)
-            Text(file.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            fileName(file, in: directory).frame(maxWidth: .infinity, alignment: .leading)
             if file.isDirectory { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
         }
         .font(.system(size: 11.5))
         .padding(.horizontal, 10).frame(height: 27)
         .background(selected ? Color.accentColor.opacity(0.16) : .clear)
         .contentShape(Rectangle())
-        .overlay(FileRowClickObserver(onSelect: {
-            if file.isDirectory { tab.openColumnFolder(file, at: index) }
-            else { tab.selectColumnFile(file, at: index) }
-        }, onDoubleClick: {
-            if !file.isDirectory { open(file) }
-        }))
+        .overlay {
+            if !isRenaming(file, in: directory) {
+                FileRowClickObserver(onSelect: {
+                    if file.isDirectory { tab.openColumnFolder(file, at: index) }
+                    else { tab.selectColumnFile(file, at: index) }
+                }, onDoubleClick: {
+                    if !file.isDirectory { open(file) }
+                })
+            }
+        }
         .contextMenu { fileContextMenu(file, columnIndex: index) }
     }
 
@@ -403,11 +409,12 @@ struct ConnectionPane: View {
     }
 
     private func fileRow(_ file: RemoteFile) -> some View {
-        HStack(spacing: 8) {
+        let directory = tab.directory
+        return HStack(spacing: 8) {
             Image(systemName: file.isDirectory ? "folder.fill" : "doc.text")
                 .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
                 .frame(width: 18)
-            Text(file.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            fileName(file, in: directory).frame(maxWidth: .infinity, alignment: .leading)
             Text(file.isDirectory ? "—" : formattedSize(file.size)).frame(width: 85, alignment: .trailing)
             Text(file.modified).frame(width: 150, alignment: .trailing)
             Text(file.permissions).frame(width: 96, alignment: .trailing)
@@ -416,10 +423,56 @@ struct ConnectionPane: View {
         .padding(.horizontal, 18).frame(height: 29)
         .background(tab.selectedFile == file.name && file.name != ".." ? Color.accentColor.opacity(0.13) : .clear)
         .contentShape(Rectangle())
-        .overlay(FileRowClickObserver(onSelect: {
-            tab.selectedFile = file.name == ".." ? nil : file.name
-        }, onDoubleClick: { open(file) }))
+        .overlay {
+            if !isRenaming(file, in: directory) {
+                FileRowClickObserver(onSelect: {
+                    tab.selectedFile = file.name == ".." ? nil : file.name
+                }, onDoubleClick: { open(file) })
+            }
+        }
         .contextMenu { fileContextMenu(file) }
+    }
+
+    private func isRenaming(_ file: RemoteFile, in directory: String) -> Bool {
+        renameTarget?.directory == directory && renameTarget?.file.name == file.name
+    }
+
+    @ViewBuilder private func fileName(_ file: RemoteFile, in directory: String) -> some View {
+        if isRenaming(file, in: directory) {
+            TextField("文件名", text: $renameName)
+                .textFieldStyle(.plain)
+                .focused($renameFocused)
+                .onSubmit { commitRename() }
+                .onExitCommand { cancelRename() }
+                .background {
+                    OutsideClickObserver { commitRename() }
+                        .allowsHitTesting(false)
+                }
+                .onChange(of: renameFocused) { _, focused in
+                    if !focused && isRenaming(file, in: directory) { commitRename() }
+                }
+        } else {
+            Text(file.name).lineLimit(1)
+        }
+    }
+
+    private func beginRename(_ file: RemoteFile, in directory: String) {
+        renameTarget = RenameTarget(file: file, directory: directory)
+        renameName = file.name
+        DispatchQueue.main.async { if renameTarget != nil { renameFocused = true } }
+    }
+
+    private func commitRename() {
+        guard let target = renameTarget else { return }
+        let name = renameName
+        renameTarget = nil
+        renameFocused = false
+        if name != target.file.name { tab.rename(target.file, to: name, in: target.directory) }
+    }
+
+    private func cancelRename() {
+        renameTarget = nil
+        renameFocused = false
     }
 
     private func formattedSize(_ raw: String) -> String {
@@ -497,10 +550,9 @@ struct ConnectionPane: View {
             Button("空文件") { selectForAction(file, columnIndex: columnIndex); newFileName = ""; showsNewFile = true }
         }
         Divider()
-        Button("重命名…", systemImage: "pencil") {
+        Button("重命名", systemImage: "pencil") {
             selectForAction(file, columnIndex: columnIndex)
-            renameName = file.name
-            renameFile = file
+            beginRename(file, in: columnIndex.flatMap { tab.columns.indices.contains($0) ? tab.columns[$0].path : nil } ?? tab.directory)
         }
         Button("删除…", systemImage: "trash", role: .destructive) {
             selectForAction(file, columnIndex: columnIndex)

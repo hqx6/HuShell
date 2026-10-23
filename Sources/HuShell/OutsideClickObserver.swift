@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct PathEditOutsideClickObserver: NSViewRepresentable {
+struct OutsideClickObserver: NSViewRepresentable {
     let onClickOutside: () -> Void
 
     func makeNSView(context: Context) -> MonitorView { MonitorView() }
@@ -27,7 +27,8 @@ struct PathEditOutsideClickObserver: NSViewRepresentable {
                 let clickedInside = event.window === window
                     && self.bounds.contains(self.convert(event.locationInWindow, from: nil))
                 if !clickedInside {
-                    DispatchQueue.main.async { [weak self] in self?.onClickOutside?() }
+                    let action = self.onClickOutside
+                    DispatchQueue.main.async { action?() }
                 }
                 return event
             }

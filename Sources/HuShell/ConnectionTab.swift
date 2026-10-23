@@ -355,7 +355,7 @@ import Foundation
         performFileOperation { try SSHService.createFile(profile: profile, path: path) }
     }
 
-    func rename(_ file: RemoteFile, to name: String) {
+    func rename(_ file: RemoteFile, to name: String, in directory: String) {
         guard validNewName(name) else { errorMessage = "请输入有效的新名称"; return }
         let profile = profile
         let from = RemotePath.joined(directory, file.name)
