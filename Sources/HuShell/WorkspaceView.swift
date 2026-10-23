@@ -532,8 +532,7 @@ struct WorkspaceView: View {
             editorRequest = EditorRequest(profile: profile)
             return
         }
-        let tab = ConnectionTab(profile: profile, transferCenter: transferCenter)
-        tab.onConnect = { try? store.recordConnection(profile.id) }
+        let tab = makeConnectionTab(profile)
         if let index = tabs.firstIndex(where: { $0.id == selectedItem?.id }),
            case .library = tabs[index] {
             tabs[index] = .connection(tab)
@@ -550,11 +549,20 @@ struct WorkspaceView: View {
     }
 
     private func duplicateUnlockedTab(_ original: ConnectionTab) {
-        let tab = ConnectionTab(profile: original.profile, transferCenter: transferCenter)
-        tab.onConnect = { try? store.recordConnection(original.profile.id) }
+        let tab = makeConnectionTab(original.profile)
         tabs.append(.connection(tab))
         selectedTabID = tab.id
         tab.connect()
+    }
+
+    private func makeConnectionTab(_ profile: ConnectionProfile) -> ConnectionTab {
+        let tab = ConnectionTab(profile: profile, transferCenter: transferCenter)
+        tab.onConnect = { [weak store] in try? store?.recordConnection(profile.id) }
+        tab.preferredDirectory = { [weak store] in store?.lastBrowsedDirectory(for: profile.id) }
+        tab.onDirectoryChanged = { [weak store] path in
+            try? store?.recordBrowsedDirectory(path, for: profile.id)
+        }
+        return tab
     }
 
     private func closeTab(_ item: WorkspaceTab) {

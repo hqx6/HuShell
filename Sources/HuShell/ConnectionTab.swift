@@ -18,6 +18,8 @@ import Foundation
     @Published var status = "准备连接"
     @Published var errorMessage: String?
     var onConnect: (() -> Void)?
+    var preferredDirectory: (() -> String?)?
+    var onDirectoryChanged: ((String) -> Void)?
     private var generation = 0
     private var statsLoading = false
     @Published private(set) var loadingDirectories: Set<String> = []
@@ -199,18 +201,26 @@ import Foundation
             let result = await Task.detached { Result { try SSHService.workingDirectory(profile: profile) } }.value
             guard let self, self.generation == generation else { return }
             self.busy = false
-            self.homeDirectoryReady = true
-            let revealDirectory = self.pendingRevealDirectory
-            self.pendingRevealDirectory = nil
             switch result {
             case .success(let path):
-                self.homeDirectory = path
-                self.goToDirectory(revealDirectory ?? path)
+                self.restoreDirectory(home: path)
             case .failure(let error):
-                if let revealDirectory { self.goToDirectory(revealDirectory) }
+                self.homeDirectoryReady = true
+                let revealDirectory = self.pendingRevealDirectory
+                self.pendingRevealDirectory = nil
+                let destination = revealDirectory ?? self.preferredDirectory?()
+                if let destination { self.goToDirectory(destination, remember: revealDirectory != nil) }
                 else { self.errorMessage = error.localizedDescription }
             }
         }
+    }
+
+    func restoreDirectory(home: String) {
+        homeDirectory = home
+        homeDirectoryReady = true
+        let revealDirectory = pendingRevealDirectory
+        pendingRevealDirectory = nil
+        goToDirectory(revealDirectory ?? preferredDirectory?() ?? home, remember: revealDirectory != nil)
     }
 
     func revealDirectory(_ path: String) {
@@ -222,18 +232,20 @@ import Foundation
         goToDirectory(name)
     }
 
-    func goToDirectory(_ input: String) {
+    func goToDirectory(_ input: String, remember: Bool = true) {
         guard connected else { return }
         guard let path = RemotePath.resolved(input, relativeTo: directory, home: homeDirectory) else {
             errorMessage = "请输入有效的文件夹路径"; return
         }
         if path == directory {
+            if remember { onDirectoryChanged?(path) }
             if usesColumns { rebuildColumns() }
             requestDirectory(path)
             return
         }
         // Change the visible path immediately; SSH completion only supplies its contents.
         directory = path
+        if remember { onDirectoryChanged?(path) }
         files = directoryCache[path]?.files ?? columns.first(where: { $0.path == path })?.files ?? []
         selectedFile = nil
         if usesColumns { rebuildColumns() }
@@ -277,7 +289,11 @@ import Foundation
         guard columns.indices.contains(index) else { return }
         columns = Array(columns.prefix(index + 1))
         columns[index].selectedName = file.name
-        directory = columns[index].path
+        let path = columns[index].path
+        if directory != path {
+            directory = path
+            onDirectoryChanged?(path)
+        }
         files = columns[index].files
         selectedFile = file.name
         busy = loadingDirectories.contains(directory)

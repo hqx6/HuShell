@@ -19,6 +19,41 @@ private actor DirectoryResponses {
 }
 
 final class DirectoryNavigationTests: XCTestCase {
+    @MainActor func testLastBrowsedDirectoryUsesLatestTabAndSurvivesRestart() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let profile = ConnectionProfile(name: "server", host: "localhost", username: "test")
+        let store = ProfileStore(directory: folder)
+        func makeTab(using store: ProfileStore) -> ConnectionTab {
+            let tab = ConnectionTab(profile: profile, transferCenter: TransferCenter(),
+                                    directoryLoader: { _, _ in [] })
+            tab.connected = true
+            tab.preferredDirectory = { store.lastBrowsedDirectory(for: profile.id) }
+            tab.onDirectoryChanged = { path in try? store.recordBrowsedDirectory(path, for: profile.id) }
+            return tab
+        }
+
+        let first = makeTab(using: store)
+        let second = makeTab(using: store)
+        first.restoreDirectory(home: "/home/test")
+        XCTAssertEqual(first.directory, "/home/test")
+        XCTAssertNil(store.lastBrowsedDirectory(for: profile.id))
+        first.goToDirectory("/srv/first")
+        second.goToDirectory("/data/second")
+        first.goToDirectory("/srv/latest")
+        XCTAssertEqual(store.lastBrowsedDirectory(for: profile.id), "/srv/latest")
+
+        let reopenedStore = ProfileStore(directory: folder)
+        let reopened = makeTab(using: reopenedStore)
+        reopened.restoreDirectory(home: "/home/test")
+        XCTAssertEqual(reopened.directory, "/srv/latest")
+        XCTAssertEqual(reopenedStore.lastBrowsedDirectory(for: profile.id), "/srv/latest")
+
+        reopened.showColumns()
+        reopened.selectColumnFile(RemoteFile(name: "srv", isDirectory: true, size: "", modified: "", permissions: ""), at: 0)
+        XCTAssertEqual(ProfileStore(directory: folder).lastBrowsedDirectory(for: profile.id), "/")
+    }
+
     @MainActor private func tab(_ responses: DirectoryResponses) -> ConnectionTab {
         let tab = ConnectionTab(profile: ConnectionProfile(name: "test", host: "localhost", username: "test"),
                                 transferCenter: TransferCenter(),

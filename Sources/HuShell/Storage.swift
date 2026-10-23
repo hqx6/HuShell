@@ -13,6 +13,7 @@ enum StoreError: LocalizedError {
     @Published private(set) var profiles: [ConnectionProfile] = []
     @Published private(set) var groupPaths: [String] = []
     @Published private(set) var recentConnections: [String: Date] = [:]
+    private(set) var lastBrowsedDirectories: [String: String] = [:]
 
     private let directory: URL?
 
@@ -32,6 +33,7 @@ enum StoreError: LocalizedError {
     init(directory: URL? = nil) {
         self.directory = directory
         recentConnections = (try? JSONDecoder().decode([String: Date].self, from: Data(contentsOf: fileURL.deletingLastPathComponent().appendingPathComponent("recent-connections.json")))) ?? [:]
+        lastBrowsedDirectories = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: fileURL.deletingLastPathComponent().appendingPathComponent("last-directories.json")))) ?? [:]
         groupPaths = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: fileURL.deletingLastPathComponent().appendingPathComponent("groups.json")))) ?? []
         guard let data = try? Data(contentsOf: fileURL),
               let saved = try? JSONDecoder().decode([ConnectionProfile].self, from: data) else { return }
@@ -68,6 +70,23 @@ enum StoreError: LocalizedError {
         try JSONEncoder().encode(updated).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         recentConnections = updated
+    }
+
+    func lastBrowsedDirectory(for id: UUID) -> String? {
+        lastBrowsedDirectories[id.uuidString]
+    }
+
+    func recordBrowsedDirectory(_ path: String, for id: UUID) throws {
+        guard path.hasPrefix("/"), !path.contains("\n"), !path.contains("\r"),
+              lastBrowsedDirectories[id.uuidString] != path else { return }
+        var updated = lastBrowsedDirectories
+        updated[id.uuidString] = path
+        let folder = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("last-directories.json")
+        try JSONEncoder().encode(updated).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        lastBrowsedDirectories = updated
     }
 
     var recentlyConnectedProfiles: [ConnectionProfile] {
