@@ -187,22 +187,6 @@ struct ConnectionPane: View {
                 .padding(2)
                 .modifier(GlassSurface(radius: 9))
                 .help("切换分栏或列表视图")
-                Menu {
-                    ForEach(RemoteFileSortKey.allCases, id: \.self) { key in
-                        Button {
-                            fileSort.select(key)
-                        } label: {
-                            if fileSort.key == key {
-                                Label(key.rawValue, systemImage: fileSort.ascending ? "arrow.up" : "arrow.down")
-                            } else { Text(key.rawValue) }
-                        }
-                    }
-                } label: {
-                    fileToolbarIcon("arrow.up.arrow.down")
-                }
-                .buttonStyle(.plain)
-                .modifier(GlassSurface(radius: 8))
-                .help("排序：\(fileSort.key.rawValue)\(fileSort.ascending ? "升序" : "降序")")
                 Button { showsTransfers = true } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.up.arrow.down.circle")
@@ -680,7 +664,7 @@ struct ConnectionPane: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         guard panel.runModal() == .OK else { return }
         tab.upload(panel.urls)
         showsTransfers = true

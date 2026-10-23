@@ -329,6 +329,29 @@ enum SSHService {
                      transfer: true, cancellation: cancellation)
     }
 
+    static func directoryUploadCommand(local: URL, remoteParent: String) throws -> String {
+        "put -R " + (try sftpQuote(local.path)) + " " + (try sftpQuote(remoteParent))
+    }
+
+    static func uploadDirectory(profile: ConnectionProfile, local: URL, remoteParent: String,
+                                cancellation: TransferCancellation? = nil) throws {
+        _ = try sftp(profile: profile, command: directoryUploadCommand(local: local, remoteParent: remoteParent),
+                     transfer: true, cancellation: cancellation)
+    }
+
+    static func remoteDirectorySize(profile: ConnectionProfile, path: String,
+                                    cancellation: TransferCancellation? = nil) throws -> Int64 {
+        let command = "du -sk " + shellQuote(path)
+        let args = options(for: profile) + ["-p", String(profile.port), profile.endpoint, command]
+        let result = try run("/usr/bin/ssh", args: args, profile: profile, timeout: 12,
+                             cancellation: cancellation)
+        guard let kilobytes = Int64(result.split(whereSeparator: \.isWhitespace).first ?? ""),
+              kilobytes <= Int64.max / 1024 else {
+            throw SSHError.command("无法读取远端文件夹大小")
+        }
+        return kilobytes * 1024
+    }
+
     static func remoteFileSize(profile: ConnectionProfile, path: String) throws -> Int64 {
         let quoted = shellQuote(path)
         let command = "stat -c %s -- \(quoted) 2>/dev/null || stat -f %z \(quoted) 2>/dev/null"

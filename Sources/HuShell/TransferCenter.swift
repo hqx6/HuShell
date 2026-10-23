@@ -16,7 +16,42 @@ enum TransferPhase: String {
 
 enum TransferDestination {
     case remote(profile: ConnectionProfile, filePath: String)
+    case remoteDirectory(profile: ConnectionProfile, path: String)
     case local(fileURL: URL)
+}
+
+private final class DirectoryUploadProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var baseline: Int64?
+    private var localBytes: Int64?
+
+    func prepare(profile: ConnectionProfile, local: URL, path: String, cancellation: TransferCancellation) {
+        let total = LocalTransferSize.directory(local)
+        lock.lock()
+        localBytes = total
+        lock.unlock()
+        let size = (try? SSHService.remoteDirectorySize(profile: profile, path: path,
+                                                        cancellation: cancellation)) ?? 0
+        lock.lock()
+        baseline = size
+        lock.unlock()
+    }
+
+    var totalBytes: Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return localBytes
+    }
+
+    func bytesUploaded(profile: ConnectionProfile, path: String) -> Int64? {
+        lock.lock()
+        let initial = baseline
+        lock.unlock()
+        guard let initial, let current = try? SSHService.remoteDirectorySize(profile: profile, path: path) else {
+            return nil
+        }
+        return max(current - initial, 0)
+    }
 }
 
 struct TransferRecord: Identifiable {
@@ -25,7 +60,7 @@ struct TransferRecord: Identifiable {
     let profileName: String
     let fileName: String
     let destination: TransferDestination
-    let totalBytes: Int64
+    var totalBytes: Int64
     var completedBytes: Int64 = 0
     var bytesPerSecond: Double = 0
     var phase: TransferPhase = .waiting
@@ -56,6 +91,24 @@ struct TransferRecord: Identifiable {
 
     func upload(profile: ConnectionProfile, local: URL, remote: String,
                 completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory) else {
+            completion(.failure(SSHError.command("本地文件或文件夹已不存在")))
+            return
+        }
+        if isDirectory.boolValue {
+            let progress = DirectoryUploadProgress()
+            let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent,
+                         destination: .remoteDirectory(profile: profile, path: remote), totalBytes: 0)
+            start(id: id, profile: profile, monitor: .remoteDirectory(remote, progress),
+                  operation: { cancellation in
+                      progress.prepare(profile: profile, local: local, path: remote, cancellation: cancellation)
+                      try SSHService.uploadDirectory(profile: profile, local: local,
+                                                     remoteParent: RemotePath.parent(remote),
+                                                     cancellation: cancellation)
+                  }, completion: completion)
+            return
+        }
         let size = ((try? FileManager.default.attributesOfItem(atPath: local.path)[.size]) as? NSNumber)?.int64Value ?? 0
         let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent,
                      destination: .remote(profile: profile, filePath: remote), totalBytes: size)
@@ -108,6 +161,12 @@ struct TransferRecord: Identifiable {
     private enum MonitorSource {
         case local(URL)
         case remote(String)
+        case remoteDirectory(String, DirectoryUploadProgress)
+
+        var keepsProgressIncomplete: Bool {
+            if case .remoteDirectory = self { return true }
+            return false
+        }
     }
 
     private func start(id: UUID, profile: ConnectionProfile, monitor: MonitorSource,
@@ -133,9 +192,17 @@ struct TransferRecord: Identifiable {
                             return ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value
                         case .remote(let path):
                             return try? SSHService.remoteFileSize(profile: profile, path: path)
+                        case .remoteDirectory(let path, let progress):
+                            return progress.bytesUploaded(profile: profile, path: path)
                         }
                     }.value
-                    if let bytes { self?.sample(id, bytes: bytes) }
+                    if case .remoteDirectory(_, let progress) = monitor,
+                       let total = progress.totalBytes {
+                        self?.change(id) { $0.totalBytes = total }
+                    }
+                    if let bytes {
+                        self?.sample(id, bytes: bytes, keepIncomplete: monitor.keepsProgressIncomplete)
+                    }
                 }
             }
             let result = await Task.detached(priority: .userInitiated) {
@@ -143,6 +210,10 @@ struct TransferRecord: Identifiable {
             }.value
             poller.cancel()
             self.cancellations.removeValue(forKey: id)
+            if case .remoteDirectory(_, let progress) = monitor,
+               let total = progress.totalBytes {
+                self.change(id) { $0.totalBytes = total }
+            }
             self.change(id) { item in
                 item.phase = cancellation.isCancelled ? .cancelled : result.isSuccess ? .completed : .failed
                 item.finishedAt = Date()
@@ -158,12 +229,13 @@ struct TransferRecord: Identifiable {
         }
     }
 
-    private func sample(_ id: UUID, bytes: Int64) {
+    private func sample(_ id: UUID, bytes: Int64, keepIncomplete: Bool = false) {
         change(id) { item in
             guard item.phase == .running else { return }
             let now = Date()
             let elapsed = max(now.timeIntervalSince(item.lastSampleAt ?? now), 0.001)
-            let next = item.totalBytes > 0 ? min(max(bytes, 0), item.totalBytes) : max(bytes, 0)
+            let limit = keepIncomplete && item.totalBytes > 0 ? item.totalBytes - 1 : item.totalBytes
+            let next = item.totalBytes > 0 ? min(max(bytes, 0), limit) : max(bytes, 0)
             let instantSpeed = max(Double(next - item.lastSampleBytes) / elapsed, 0)
             item.bytesPerSecond = instantSpeed > 0
                 ? (item.bytesPerSecond > 0 ? item.bytesPerSecond * 0.65 + instantSpeed * 0.35 : instantSpeed)
@@ -209,7 +281,7 @@ struct TransferCenterView: View {
             .padding(15)
             Divider()
             if center.items.isEmpty {
-                ContentUnavailableView("暂无传输", systemImage: "arrow.up.arrow.down", description: Text("拖入文件或使用上传、下载按钮开始传输"))
+                ContentUnavailableView("暂无传输", systemImage: "arrow.up.arrow.down", description: Text("拖入文件或文件夹，或使用上传、下载按钮开始传输"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -285,6 +357,8 @@ struct TransferCenterView: View {
         switch item.destination {
         case .remote(let profile, let filePath):
             onOpenRemote(profile, RemotePath.parent(filePath))
+        case .remoteDirectory(let profile, let path):
+            onOpenRemote(profile, path)
         case .local(let fileURL):
             let directory = fileURL.deletingLastPathComponent()
             guard FileManager.default.fileExists(atPath: directory.path) else {

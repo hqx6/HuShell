@@ -285,13 +285,10 @@ import Foundation
 
     func upload(_ urls: [URL]) {
         guard connected, !urls.isEmpty else { return }
-        let files = urls.filter { url in
-            var isDirectory: ObjCBool = false
-            return url.isFileURL && FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
-        }
-        guard !files.isEmpty else { errorMessage = "仅支持拖入文件，暂不支持文件夹"; return }
+        let files = urls.filter { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) }
+        guard !files.isEmpty else { errorMessage = "没有可上传的文件或文件夹"; return }
         let generation = generation
-        status = "正在上传 \(files.count) 个文件"
+        status = "正在上传 \(files.count) 项"
         for url in files {
             let remote = RemotePath.joined(directory, url.lastPathComponent)
             transferCenter.upload(profile: profile, local: url, remote: remote) { [weak self] result in
