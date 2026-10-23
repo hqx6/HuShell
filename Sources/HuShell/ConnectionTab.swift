@@ -301,7 +301,7 @@ import Foundation
                         self.loadFiles()
                     } else {
                         self.status = "上传失败"
-                        self.errorMessage = error.localizedDescription
+                        self.errorMessage = TransferErrorSummary.upload(error)
                     }
                 }
             }
@@ -363,7 +363,7 @@ import Foundation
     func remove(_ file: RemoteFile, fast: Bool) {
         let profile = profile
         let path = RemotePath.joined(directory, file.name)
-        performFileOperation {
+        performFileOperation(errorSummary: TransferErrorSummary.delete) {
             if fast { try SSHService.fastRemove(profile: profile, path: path) }
             else { try SSHService.remove(profile: profile, path: path, isDirectory: file.isDirectory) }
         }
@@ -380,7 +380,8 @@ import Foundation
         !name.contains("\n") && !name.contains("\r")
     }
 
-    private func performFileOperation(_ operation: @escaping () throws -> Void) {
+    private func performFileOperation(errorSummary: @escaping (Error) -> String = { $0.localizedDescription },
+                                      _ operation: @escaping () throws -> Void) {
         guard connected else { return }
         let generation = generation
         busy = true
@@ -390,7 +391,7 @@ import Foundation
             self.busy = false
             switch result {
             case .success: self.loadFiles()
-            case .failure(let error): self.errorMessage = error.localizedDescription
+            case .failure(let error): self.errorMessage = errorSummary(error)
             }
         }
     }
