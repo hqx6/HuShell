@@ -121,10 +121,10 @@ struct ConnectionPane: View {
                     .font(.system(size: 11, design: .monospaced))
                     .focused($pathFocused)
                     .onSubmit {
-                        editingPath = false
+                        endPathEdit()
                         tab.goToDirectory(pathInput)
                     }
-                    .onExitCommand { editingPath = false }
+                    .onExitCommand { endPathEdit() }
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
@@ -151,12 +151,26 @@ struct ConnectionPane: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if editingPath {
+                PathEditOutsideClickObserver { endPathEdit() }
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: pathFocused) { _, focused in
+            if !focused && editingPath { endPathEdit() }
+        }
     }
 
     private func beginPathEdit() {
         pathInput = tab.directory
         editingPath = true
-        DispatchQueue.main.async { pathFocused = true }
+        DispatchQueue.main.async { if editingPath { pathFocused = true } }
+    }
+
+    private func endPathEdit() {
+        editingPath = false
+        pathFocused = false
     }
 
     private var filePanel: some View {
