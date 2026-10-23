@@ -260,6 +260,12 @@ private extension Result where Success == Void {
 }
 
 struct TransferCenterView: View {
+    private static let completionTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
     @ObservedObject var center: TransferCenter
     let onOpenRemote: (ConnectionProfile, String) -> Void
     @State private var locationError: String?
@@ -314,6 +320,13 @@ struct TransferCenterView: View {
                         HStack {
                             Text(item.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
                             Spacer()
+                            if item.phase == .completed, let finishedAt = item.finishedAt {
+                                Text(Self.completionTimeFormatter.string(from: finishedAt))
+                                    .font(.system(size: 10))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize()
+                            }
                             Text(item.phase.rawValue).foregroundStyle(item.phase == .failed ? .red : .secondary)
                             Image(systemName: "folder").foregroundStyle(.secondary)
                                 .font(.system(size: 10))
