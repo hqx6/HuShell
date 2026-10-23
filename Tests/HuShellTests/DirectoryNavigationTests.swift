@@ -93,6 +93,13 @@ final class DirectoryNavigationTests: XCTestCase {
         XCTAssertEqual(tab.columns.map(\.path), ["/", "/data"])
         let counts = await responses.counts
         XCTAssertEqual(counts["/data"], 1)
+        tab.loadFiles()
+        await waitUntil { await responses.counts["/data"] == 2 }
+        let refreshedCounts = await responses.counts
+        XCTAssertEqual(refreshedCounts["/"], 1, "Refreshing a folder should keep ancestor listings cached")
+        await responses.finish("/data", name: "new-app")
+        await waitUntil { !tab.busy }
+        XCTAssertEqual(tab.files.first?.name, "new-app")
     }
 
     @MainActor func testLateReplyDoesNotOverwriteNewNavigationAndIsReusable() async {

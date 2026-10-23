@@ -150,9 +150,16 @@ struct SudoChallenge: Identifiable {
 
     func loadFiles() {
         guard connected else { return }
-        // Explicit refresh and file mutations must not reuse stale ancestor listings.
-        directoryCache.removeAll()
-        requestDirectory(directory, force: true)
+        refreshDirectories([directory])
+    }
+
+    private func refreshDirectories(_ paths: Set<String>) {
+        for path in paths {
+            directoryCache[path] = nil
+            if path == directory || columns.contains(where: { $0.path == path }) {
+                requestDirectory(path, force: true)
+            }
+        }
     }
 
     private func requestDirectory(_ path: String, force: Bool = false) {
@@ -287,7 +294,8 @@ struct SudoChallenge: Identifiable {
                             ?? (crumb.path == directory ? files : previous.first(where: { $0.path == crumb.path })?.files ?? []),
                          selectedName: index + 1 < crumbs.count ? crumbs[index + 1].name : selectedFile)
         }
-        for crumb in crumbs { requestDirectory(crumb.path) }
+        // Fill the visible folder first; ancestor columns can arrive afterwards.
+        for crumb in crumbs.reversed() { requestDirectory(crumb.path) }
     }
 
     func openColumnFolder(_ file: RemoteFile, at index: Int) {
@@ -421,6 +429,33 @@ struct SudoChallenge: Identifiable {
                                                                              password: $0) })
     }
 
+    func moveRemoteItem(from source: String, to destinationDirectory: String) {
+        guard connected else { return }
+        let target: String
+        do { target = try SSHService.moveDestination(from: source, toDirectory: destinationDirectory) }
+        catch { errorMessage = error.localizedDescription; return }
+        let profile = profile
+        let sourceDirectory = RemotePath.parent(source)
+        performFileOperation(action: "移动", target: String(source.split(separator: "/").last ?? ""),
+                             affectedDirectories: [sourceDirectory, destinationDirectory],
+                             operation: { try SSHService.move(profile: profile, from: source,
+                                                              toDirectory: destinationDirectory) },
+                             sudoOperation: { try SSHService.moveWithSudo(profile: profile, from: source,
+                                                                          toDirectory: destinationDirectory,
+                                                                          password: $0) },
+                             onSuccess: { [weak self] in
+                                 guard let self else { return }
+                                 if let relocated = RemotePath.relocatedDirectory(self.directory,
+                                                                                  moving: source, to: target) {
+                                     self.goToDirectory(relocated)
+                                 }
+                             })
+        if selectedFile == String(source.split(separator: "/").last ?? ""), directory == sourceDirectory {
+            selectedFile = nil
+        }
+        status = "正在移动到 \(RemotePath.parent(target))"
+    }
+
     func remove(_ file: RemoteFile, fast: Bool) {
         let profile = profile
         let path = RemotePath.joined(directory, file.name)
@@ -453,9 +488,11 @@ struct SudoChallenge: Identifiable {
 
     private func performFileOperation(action: String, target: String,
                                       errorSummary: ((Error) -> String)? = nil,
+                                      affectedDirectories: Set<String>? = nil,
                                       operation: @escaping () throws -> Void,
                                       sudoOperation: @escaping (String) throws -> Void,
-                                      password: String? = nil) {
+                                      password: String? = nil,
+                                      onSuccess: (() -> Void)? = nil) {
         guard connected else { return }
         let generation = generation
         busy = true
@@ -467,15 +504,20 @@ struct SudoChallenge: Identifiable {
             guard let self, self.generation == generation else { return }
             self.busy = false
             switch result {
-            case .success: self.loadFiles()
+            case .success:
+                self.status = "\(action)完成"
+                onSuccess?()
+                self.refreshDirectories(affectedDirectories ?? [self.directory])
             case .failure(let error):
                 if password == nil && RemotePermission.isDenied(error) {
                     self.requestSudo(action: action, target: target) { [weak self] password in
                         self?.performFileOperation(action: action, target: target, errorSummary: errorSummary,
+                                                   affectedDirectories: affectedDirectories,
                                                    operation: operation, sudoOperation: sudoOperation,
-                                                   password: password)
+                                                   password: password, onSuccess: onSuccess)
                     }
                 } else {
+                    self.status = "\(action)失败"
                     self.errorMessage = errorSummary?(error) ?? TransferErrorSummary.operation(error, action: action)
                 }
             }

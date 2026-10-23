@@ -32,6 +32,8 @@ final class RemoteFileTests: XCTestCase {
         """
         let files = try SSHService.parseListing(listing)
         XCTAssertEqual(files.first(where: { $0.name == "medium file.txt" })?.modified, "2026-09-29 23:59:58")
+        XCTAssertEqual(files.first(where: { $0.name == "medium file.txt" })?.owner, "user")
+        XCTAssertEqual(files.first(where: { $0.name == "medium file.txt" })?.group, "group")
         var sort = RemoteFileSort()
         sort.select(.size)
         XCTAssertEqual(sort.files(files).map(\.name), ["backup", "small.txt", "medium file.txt", "large.txt"])
@@ -47,5 +49,55 @@ final class RemoteFileTests: XCTestCase {
         let now = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 30))!
         XCTAssertEqual(RemoteFileDate.normalized("Sep 29 13:04", now: now), "2026-09-29 13:04:00")
         XCTAssertEqual(RemoteFileDate.normalized("Dec 30 13:04", now: now), "2025-12-30 13:04:00")
+    }
+
+    func testMovingRemoteItemsRejectsSelfAndExistingDestinations() throws {
+        XCTAssertThrowsError(try SSHService.moveDestination(from: "/srv/folder", toDirectory: "/srv/folder/child"))
+        XCTAssertThrowsError(try SSHService.moveDestination(from: "/srv/file", toDirectory: "/srv"))
+        XCTAssertEqual(try SSHService.moveDestination(from: "/srv/file", toDirectory: "/"), "/file")
+        XCTAssertEqual(RemotePath.relocatedDirectory("/srv/folder/child", moving: "/srv/folder",
+                                                     to: "/data/folder"), "/data/folder/child")
+        XCTAssertNil(RemotePath.relocatedDirectory("/srv/folder2", moving: "/srv/folder",
+                                                  to: "/data/folder"))
+        let item = RemoteFileDragItem(profileID: UUID(), path: "/srv/file", isDirectory: false)
+        XCTAssertTrue(item.canMove(to: "/tmp", profileID: item.profileID))
+        XCTAssertFalse(item.canMove(to: "/tmp", profileID: UUID()))
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("other/source.txt")
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("source".utf8).write(to: source)
+        try Data("existing".utf8).write(to: destination)
+        let script = SSHService.moveCommand(from: source.path, to: destination.path)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        let output = Pipe()
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertNotEqual(process.terminationStatus, 0)
+        XCTAssertEqual(try String(contentsOf: source), "source")
+        XCTAssertEqual(try String(contentsOf: destination), "existing")
+        try FileManager.default.removeItem(at: destination)
+        let successful = Process()
+        successful.executableURL = URL(fileURLWithPath: "/bin/sh")
+        successful.arguments = ["-c", script]
+        try successful.run()
+        successful.waitUntilExit()
+        XCTAssertEqual(successful.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try String(contentsOf: destination), "source")
+    }
+
+    func testSSHDirectoryRequestsCanReuseTheTerminalConnection() {
+        let profile = ConnectionProfile(name: "test", host: "example.com", username: "user")
+        let options = SSHService.options(for: profile)
+        XCTAssertTrue(options.contains("ControlMaster=auto"))
+        XCTAssertTrue(options.contains("ControlPersist=no"))
+        XCTAssertTrue(options.contains(where: { $0.hasPrefix("ControlPath=/tmp/hushell-") && $0.hasSuffix("-%C") }))
     }
 }

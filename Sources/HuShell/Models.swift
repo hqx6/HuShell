@@ -35,7 +35,20 @@ struct RemoteFile: Identifiable, Hashable {
     let size: String
     let modified: String
     let permissions: String
+    let owner: String
+    let group: String
     var id: String { name }
+
+    init(name: String, isDirectory: Bool, size: String, modified: String, permissions: String,
+         owner: String = "", group: String = "") {
+        self.name = name
+        self.isDirectory = isDirectory
+        self.size = size
+        self.modified = modified
+        self.permissions = permissions
+        self.owner = owner
+        self.group = group
+    }
 }
 
 enum HostMonitorSection: String, CaseIterable, Hashable, Sendable {
@@ -185,6 +198,11 @@ struct RemoteColumn: Identifiable {
 }
 
 enum RemotePath {
+    static func relocatedDirectory(_ current: String, moving source: String, to destination: String) -> String? {
+        guard current == source || current.hasPrefix(source + "/") else { return nil }
+        return destination + current.dropFirst(source.count)
+    }
+
     static func resolved(_ input: String, relativeTo directory: String, home: String) -> String? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.contains("\n"), !trimmed.contains("\r") else { return nil }

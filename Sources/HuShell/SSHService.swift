@@ -104,6 +104,7 @@ enum SSHService {
     static func options(for profile: ConnectionProfile) -> [String] {
         var args = ["-o", "BatchMode=no", "-o", "ConnectTimeout=12", "-o", "ServerAliveInterval=20",
                     "-o", "StrictHostKeyChecking=accept-new", "-o", "NumberOfPasswordPrompts=1"]
+        args += connectionReuseOptions()
         args += knownHostsOptions()
         if profile.usesPassword { args += ["-o", "PreferredAuthentications=password,keyboard-interactive"] }
         if !profile.identityFile.isEmpty { args += ["-i", profile.identityFile] }
@@ -281,6 +282,7 @@ enum SSHService {
         let args = ["-o", "BatchMode=no", "-o", "ConnectTimeout=12", "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "NumberOfPasswordPrompts=1", "-o", "ServerAliveInterval=15",
                     "-o", "ServerAliveCountMax=3", "-P", String(profile.port)]
+            + connectionReuseOptions()
             + knownHostsOptions()
             + (profile.identityFile.isEmpty ? [] : ["-i", profile.identityFile])
             + ["-b", "-", profile.endpoint]
@@ -317,7 +319,7 @@ enum SSHService {
     }
 
     static func parseListing(_ result: String) throws -> [RemoteFile] {
-        let pattern = #"^([dlcbps-][rwxstST-]{9}[+@.]?)\s+\S+\s+\S+\s+\S+\s+(\d+)\s+((?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})|(?:\S+\s+\S+\s+\S+))\s+(.+)$"#
+        let pattern = #"^([dlcbps-][rwxstST-]{9}[+@.]?)\s+\S+\s+(\S+)\s+(\S+)\s+(\d+)\s+((?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})|(?:\S+\s+\S+\s+\S+))\s+(.+)$"#
         let regex = try NSRegularExpression(pattern: pattern)
         return result.split(separator: "\n").compactMap { line in
             let value = String(line)
@@ -327,11 +329,12 @@ enum SSHService {
                 guard let range = Range(match.range(at: index), in: value) else { return "" }
                 return String(value[range])
             }
-            let fullName = group(4).components(separatedBy: " -> ")[0]
+            let fullName = group(6).components(separatedBy: " -> ")[0]
             let name = String(fullName.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
             guard name != ".", name != ".." else { return nil }
             return RemoteFile(name: name, isDirectory: group(1).hasPrefix("d"),
-                              size: group(2), modified: RemoteFileDate.normalized(group(3)), permissions: group(1))
+                              size: group(4), modified: RemoteFileDate.normalized(group(5)),
+                              permissions: group(1), owner: group(2), group: group(3))
         }.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
@@ -439,6 +442,32 @@ enum SSHService {
                             + shellQuote(from) + " " + shellQuote(to))
     }
 
+    static func move(profile: ConnectionProfile, from: String, toDirectory: String) throws {
+        let destination = try moveDestination(from: from, toDirectory: toDirectory)
+        _ = try runRemote(profile: profile, command: moveCommand(from: from, to: destination))
+    }
+
+    static func moveWithSudo(profile: ConnectionProfile, from: String, toDirectory: String,
+                             password: String) throws {
+        let destination = try moveDestination(from: from, toDirectory: toDirectory)
+        try runWithSudo(profile: profile, password: password,
+                        command: moveCommand(from: from, to: destination))
+    }
+
+    static func moveDestination(from: String, toDirectory: String) throws -> String {
+        guard safeTargetPath(from), (toDirectory == "/" || safeTargetPath(toDirectory)),
+              RemotePath.parent(from) != toDirectory,
+              toDirectory != from, !toDirectory.hasPrefix(from + "/") else {
+            throw SSHError.command("不能移动到原位置或文件夹自身内部")
+        }
+        return RemotePath.joined(toDirectory, String(from.split(separator: "/").last ?? ""))
+    }
+
+    static func moveCommand(from: String, to: String) -> String {
+        let script = "[ ! -e \"$2\" ] && [ ! -L \"$2\" ] || { echo '目标已有同名文件或文件夹' >&2; exit 1; }; mv -- \"$1\" \"$2\""
+        return "sh -c " + shellQuote(script) + " hushell " + shellQuote(from) + " " + shellQuote(to)
+    }
+
     static func remove(profile: ConnectionProfile, path: String, isDirectory: Bool) throws {
         guard safeTargetPath(path) else { throw SSHError.unsafeTarget }
         _ = try sftp(profile: profile, command: (isDirectory ? "rmdir " : "rm ") + sftpQuote(path))
@@ -531,6 +560,15 @@ enum SSHService {
     private static func knownHostsOptions() -> [String] {
         guard let path = ProcessInfo.processInfo.environment["HUSHELL_KNOWN_HOSTS_FILE"], !path.isEmpty else { return [] }
         return ["-o", "UserKnownHostsFile=\(path)"]
+    }
+
+    private static let controlSocketPrefix = "/tmp/hushell-\(getuid())-\(UUID().uuidString.prefix(8))"
+
+    private static func connectionReuseOptions() -> [String] {
+        // %C includes host, port and user, so edited profiles cannot reuse a
+        // terminal connection to a different server. The prefix is per app launch.
+        let socket = controlSocketPrefix + "-%C"
+        return ["-o", "ControlMaster=auto", "-o", "ControlPersist=no", "-o", "ControlPath=\(socket)"]
     }
 }
 

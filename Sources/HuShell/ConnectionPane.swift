@@ -32,6 +32,7 @@ struct ConnectionPane: View {
     @State private var fileSort = RemoteFileSort()
     @State private var showsTransfers = false
     @State private var isDropTargeted = false
+    @State private var targetedRemoteColumn: String?
     @State private var editingPath = false
     @State private var pathInput = ""
     @FocusState private var pathFocused: Bool
@@ -95,7 +96,9 @@ struct ConnectionPane: View {
             TextField("例如 644", text: $permissionsMode)
             Button("应用") { if let file = permissionsFile { tab.changePermissions(file, mode: permissionsMode) }; permissionsFile = nil }
             Button("取消", role: .cancel) { permissionsFile = nil }
-        } message: { Text("输入 3 或 4 位八进制权限") }
+        } message: {
+            Text("所属用户：\(permissionsFile?.owner ?? "—")  所属组：\(permissionsFile?.group ?? "—")\n输入 3 或 4 位八进制权限")
+        }
         .confirmationDialog("确认删除", isPresented: Binding(get: { deleteRequest != nil }, set: { if !$0 { deleteRequest = nil } })) {
             Button(deleteRequest?.fast == true ? "快速删除" : "删除", role: .destructive) {
                 if let request = deleteRequest { tab.remove(request.file, fast: request.fast) }
@@ -142,7 +145,9 @@ struct ConnectionPane: View {
                                 .contentShape(Rectangle())
                                 .overlay(FileRowClickObserver(onSelect: {
                                     tab.goToDirectory(crumb.path)
-                                }, onDoubleClick: { beginPathEdit() }))
+                                }, onDoubleClick: { beginPathEdit() },
+                                    canDrop: { $0.canMove(to: crumb.path, profileID: tab.profile.id) },
+                                    onDrop: { tab.moveRemoteItem(from: $0.path, to: crumb.path) }))
                             if crumb.path != tab.directory {
                                 Image(systemName: "chevron.right").font(.system(size: 8)).foregroundStyle(.tertiary)
                             }
@@ -251,7 +256,7 @@ struct ConnectionPane: View {
                 sortHeader(.name).frame(maxWidth: .infinity, alignment: .leading)
                 sortHeader(.size).frame(width: 85, alignment: .trailing)
                 sortHeader(.modified).frame(width: 150, alignment: .trailing)
-                Text("权限").frame(width: 96, alignment: .trailing)
+                Text("权限 · 用户/组").frame(width: 155, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
             .padding(.horizontal, 18).frame(height: 30)
@@ -299,6 +304,12 @@ struct ConnectionPane: View {
                             .padding(.vertical, 5)
                             .background(CompactScrollIndicators())
                         }
+                        .background(targetedRemoteColumn == column.path ? Color.accentColor.opacity(0.08) : .clear)
+                        .onDrop(of: [RemoteFileDragItem.pasteboardType.rawValue],
+                                isTargeted: Binding(get: { targetedRemoteColumn == column.path },
+                                                    set: { targetedRemoteColumn = $0 ? column.path : nil })) {
+                            handleRemoteDrop($0, to: column.path)
+                        }
                         .frame(width: columnWidth(for: column.path))
                         .id(column.path)
                         SplitResizeHandle(axis: .horizontal, size: columnWidth(for: column.path)) { width in
@@ -344,9 +355,14 @@ struct ConnectionPane: View {
                     else { tab.selectColumnFile(file, at: index) }
                 }, onDoubleClick: {
                     if !file.isDirectory { open(file) }
-                })
+                }, dragItem: dragItem(for: file, in: directory),
+                    canDrop: file.isDirectory ? { $0.canMove(to: RemotePath.joined(directory, file.name),
+                                                             profileID: tab.profile.id) } : nil,
+                    onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
+                                                                     to: RemotePath.joined(directory, file.name)) } : nil)
             }
         }
+        .help(fileMetadata(file))
         .contextMenu { fileContextMenu(file, columnIndex: index) }
     }
 
@@ -366,6 +382,22 @@ struct ConnectionPane: View {
         group.notify(queue: .main) {
             tab.upload(dropped)
             if !dropped.isEmpty { showsTransfers = true }
+        }
+        return true
+    }
+
+    private func handleRemoteDrop(_ providers: [NSItemProvider], to directory: String) -> Bool {
+        guard tab.connected, let provider = providers.first,
+              provider.hasItemConformingToTypeIdentifier(RemoteFileDragItem.pasteboardType.rawValue) else {
+            return false
+        }
+        _ = provider.loadDataRepresentation(forTypeIdentifier: RemoteFileDragItem.pasteboardType.rawValue) { data, _ in
+            guard let data, let item = try? JSONDecoder().decode(RemoteFileDragItem.self, from: data) else { return }
+            DispatchQueue.main.async {
+                if item.canMove(to: directory, profileID: tab.profile.id) {
+                    tab.moveRemoteItem(from: item.path, to: directory)
+                }
+            }
         }
         return true
     }
@@ -406,7 +438,8 @@ struct ConnectionPane: View {
             fileName(file, in: directory).frame(maxWidth: .infinity, alignment: .leading)
             Text(file.isDirectory ? "—" : formattedSize(file.size)).frame(width: 85, alignment: .trailing)
             Text(file.modified).frame(width: 150, alignment: .trailing)
-            Text(file.permissions).frame(width: 96, alignment: .trailing)
+            Text(fileMetadata(file)).lineLimit(1).truncationMode(.middle)
+                .frame(width: 155, alignment: .trailing)
         }
         .font(.system(size: 11.5))
         .padding(.horizontal, 18).frame(height: 29)
@@ -416,10 +449,32 @@ struct ConnectionPane: View {
             if !isRenaming(file, in: directory) {
                 FileRowClickObserver(onSelect: {
                     tab.selectedFile = file.name == ".." ? nil : file.name
-                }, onDoubleClick: { open(file) })
+                }, onDoubleClick: { open(file) }, dragItem: dragItem(for: file, in: directory),
+                    canDrop: file.isDirectory ? { $0.canMove(to: dropDirectory(for: file, in: directory),
+                                                             profileID: tab.profile.id) } : nil,
+                    onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
+                                                                     to: dropDirectory(for: file, in: directory)) } : nil)
             }
         }
+        .help(fileMetadata(file))
         .contextMenu { fileContextMenu(file) }
+    }
+
+    private func dragItem(for file: RemoteFile, in directory: String) -> RemoteFileDragItem? {
+        guard file.name != ".." else { return nil }
+        return RemoteFileDragItem(profileID: tab.profile.id,
+                                  path: RemotePath.joined(directory, file.name),
+                                  isDirectory: file.isDirectory)
+    }
+
+    private func dropDirectory(for file: RemoteFile, in directory: String) -> String {
+        file.name == ".." ? RemotePath.parent(directory) : RemotePath.joined(directory, file.name)
+    }
+
+    private func fileMetadata(_ file: RemoteFile) -> String {
+        let owner = file.owner.isEmpty ? "—" : file.owner
+        let group = file.group.isEmpty ? "—" : file.group
+        return "\(file.permissions)  \(owner):\(group)"
     }
 
     private func isRenaming(_ file: RemoteFile, in directory: String) -> Bool {
