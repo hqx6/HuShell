@@ -64,6 +64,59 @@ final class FolderUploadTests: XCTestCase {
         XCTAssertEqual(center.items[0].phase, .cancelled)
     }
 
+    @MainActor func testBatchOfNestedFoldersQueuesExcessTransfersAndCanCancelThem() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = TransferCenter()
+        let profile = ConnectionProfile(name: "test", host: "127.0.0.1", port: 1, username: "test")
+        for number in 0..<6 {
+            let folder = root.appendingPathComponent("folder-\(number)")
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("child/grandchild"),
+                                                    withIntermediateDirectories: true)
+            try Data("content".utf8).write(to: folder.appendingPathComponent("child/grandchild/file.txt"))
+            center.upload(profile: profile, local: folder, remote: "/srv/" + folder.lastPathComponent) { _ in }
+        }
+        XCTAssertEqual(center.items.filter { $0.phase == .running }.count, 2)
+        XCTAssertEqual(center.items.filter { $0.phase == .waiting }.count, 4)
+        center.cancelAll()
+        XCTAssertEqual(center.activeCount, 0)
+        XCTAssertTrue(center.items.allSatisfy { $0.phase == .cancelled })
+    }
+
+    func testTransferOutputKeepsOnlyTailOfLargeProcessOutput() throws {
+        let profile = ConnectionProfile(name: "test", host: "127.0.0.1", port: 1, username: "test")
+        let script = "awk 'BEGIN { for (i=0; i<20000; i++) print \"file-output-line\" }'; printf 'FINAL_ERROR_MARKER' >&2; exit 7"
+        XCTAssertThrowsError(try SSHService.run("/bin/sh", args: ["-c", script], profile: profile,
+                                                   maxOutputBytes: 4096)) { error in
+            guard case SSHError.command(let output) = error else { return XCTFail("Unexpected error: \(error)") }
+            XCTAssertTrue(output.contains("FINAL_ERROR_MARKER"))
+            XCTAssertLessThanOrEqual(output.utf8.count, 4096)
+        }
+    }
+
+    func testMultipleNestedFoldersUploadToOneDestination() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("remote")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let profile = ConnectionProfile(name: "test", host: "localhost", username: "test")
+        for number in 0..<5 {
+            let source = root.appendingPathComponent("folder-\(number)")
+            try FileManager.default.createDirectory(at: source.appendingPathComponent("a/b/c"),
+                                                    withIntermediateDirectories: true)
+            try Data("file-\(number)".utf8).write(to: source.appendingPathComponent("a/b/c/item.txt"))
+            let command = try SSHService.directoryUploadCommand(local: source, remoteParent: destination.path)
+            _ = try SSHService.run("/usr/bin/sftp",
+                                   args: ["-D", "/usr/libexec/sftp-server", "-b", "-", "localhost"],
+                                   profile: profile, input: Data((command + "\n").utf8),
+                                   maxOutputBytes: 64 * 1024)
+        }
+        for number in 0..<5 {
+            let file = destination.appendingPathComponent("folder-\(number)/a/b/c/item.txt")
+            XCTAssertEqual(try String(contentsOf: file), "file-\(number)")
+        }
+    }
+
     func testSudoUploadCopyMergesIntoExistingFolder() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -19,6 +19,25 @@ final class TransferCenterTests: XCTestCase {
         XCTAssertTrue(center.items.allSatisfy { $0.phase == .cancelled })
     }
 
+    @MainActor func testWaitingTransferStartsWhenEarlierTransferFinishes() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let center = TransferCenter()
+        let profile = ConnectionProfile(name: "test", host: "127.0.0.1", port: 1, username: "test")
+        let finished = expectation(description: "All queued transfers finish")
+        finished.expectedFulfillmentCount = 3
+        for number in 0..<3 {
+            center.upload(profile: profile, local: file, remote: "/tmp/queued-\(number)") { _ in
+                finished.fulfill()
+            }
+        }
+        XCTAssertEqual(center.items.filter { $0.phase == .waiting }.count, 1)
+        await fulfillment(of: [finished], timeout: 10)
+        XCTAssertEqual(center.activeCount, 0)
+        XCTAssertEqual(center.items.filter { $0.phase == .failed }.count, 3)
+    }
+
     func testEstimatedRemainingSecondsRequiresKnownSizeAndSpeed() {
         var item = TransferRecord(id: UUID(), direction: .upload, profileName: "test",
                                   fileName: "file.txt", destination: .remote(profile: ConnectionProfile(name: "test", host: "localhost", username: "test"), filePath: "/file.txt"),

@@ -124,6 +124,14 @@ struct TransferRecord: Identifiable {
 @MainActor final class TransferCenter: ObservableObject {
     @Published private(set) var items: [TransferRecord] = []
     private var cancellations: [UUID: TransferCancellation] = [:]
+    private struct PendingTransfer {
+        let id: UUID
+        let launch: () -> Void
+        let completion: @MainActor (Result<Void, Error>) -> Void
+    }
+    private var pending: [PendingTransfer] = []
+    private var running: Set<UUID> = []
+    private let maximumConcurrentTransfers = 2
 
     var activeCount: Int { items.filter { $0.phase == .waiting || $0.phase == .running }.count }
 
@@ -203,6 +211,11 @@ struct TransferRecord: Identifiable {
             $0.bytesPerSecond = 0
         }
         cancellations[id]?.cancel()
+        if let index = pending.firstIndex(where: { $0.id == id }) {
+            let transfer = pending.remove(at: index)
+            cancellations.removeValue(forKey: id)
+            transfer.completion(.failure(SSHError.cancelled))
+        }
     }
 
     func cancelAll() {
@@ -237,14 +250,33 @@ struct TransferRecord: Identifiable {
                        completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         let cancellation = TransferCancellation()
         cancellations[id] = cancellation
-        Task { [weak self] in
-            guard let self else { return }
-            self.change(id) { item in
-                guard item.phase != .cancelled else { return }
+        pending.append(PendingTransfer(id: id, launch: { [weak self] in
+            self?.run(id: id, profile: profile, monitor: monitor, operation: operation,
+                      completion: completion, cancellation: cancellation)
+        }, completion: completion))
+        startPendingTransfers()
+    }
+
+    private func startPendingTransfers() {
+        while running.count < maximumConcurrentTransfers && !pending.isEmpty {
+            let transfer = pending.removeFirst()
+            guard items.contains(where: { $0.id == transfer.id && $0.phase == .waiting }) else { continue }
+            running.insert(transfer.id)
+            change(transfer.id) { item in
                 item.phase = .running
                 item.startedAt = Date()
                 item.lastSampleAt = item.startedAt
             }
+            transfer.launch()
+        }
+    }
+
+    private func run(id: UUID, profile: ConnectionProfile, monitor: MonitorSource,
+                     operation: @escaping (TransferCancellation) throws -> Void,
+                     completion: @escaping @MainActor (Result<Void, Error>) -> Void,
+                     cancellation: TransferCancellation) {
+        Task { [weak self] in
+            guard let self else { return }
             let poller = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 800_000_000)
@@ -299,6 +331,8 @@ struct TransferRecord: Identifiable {
                 }
             }
             completion(cancellation.isCancelled ? .failure(SSHError.cancelled) : result)
+            self.running.remove(id)
+            self.startPendingTransfers()
         }
     }
 

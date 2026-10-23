@@ -112,7 +112,8 @@ enum SSHService {
 
     static func run(_ executable: String, args: [String], profile: ConnectionProfile,
                     input: Data? = nil, timeout: TimeInterval? = 45,
-                    cancellation: TransferCancellation? = nil) throws -> String {
+                    cancellation: TransferCancellation? = nil,
+                    maxOutputBytes: Int? = nil) throws -> String {
         if cancellation?.isCancelled == true { throw SSHError.cancelled }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -142,7 +143,17 @@ enum SSHService {
                 TransferCancellation.stop(process)
             }
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        // Recursive SFTP prints a line for every file. Drain its pipe while retaining
+        // only the tail needed to report a failure, even for very large uploads.
+        var data = Data()
+        while true {
+            let chunk = output.fileHandleForReading.readData(ofLength: 32 * 1024)
+            if chunk.isEmpty { break }
+            data.append(chunk)
+            if let maxOutputBytes, data.count > maxOutputBytes {
+                data.removeFirst(data.count - maxOutputBytes)
+            }
+        }
         process.waitUntilExit()
         if cancellation?.isCancelled == true { throw SSHError.cancelled }
         let text = String(decoding: data, as: UTF8.self)
@@ -275,7 +286,7 @@ enum SSHService {
             + ["-b", "-", profile.endpoint]
         return try run("/usr/bin/sftp", args: args, profile: profile,
                        input: Data((command + "\n").utf8), timeout: transfer ? nil : 45,
-                       cancellation: cancellation)
+                       cancellation: cancellation, maxOutputBytes: transfer ? 64 * 1024 : nil)
     }
 
     static func list(profile: ConnectionProfile, path: String) throws -> [RemoteFile] {
