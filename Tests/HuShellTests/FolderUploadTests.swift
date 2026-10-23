@@ -63,4 +63,28 @@ final class FolderUploadTests: XCTestCase {
         center.cancelAll()
         XCTAssertEqual(center.items[0].phase, .cancelled)
     }
+
+    func testSudoUploadCopyMergesIntoExistingFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staged = root.appendingPathComponent("staged/项目 文件夹")
+        let targetParent = root.appendingPathComponent("target")
+        let target = targetParent.appendingPathComponent(staged.lastPathComponent)
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("new".utf8).write(to: staged.appendingPathComponent("new.txt"))
+        try Data("old".utf8).write(to: target.appendingPathComponent("old.txt"))
+
+        let command = SSHService.sudoUploadCopyCommand(stagedPath: staged.path,
+                                                       remote: target.path, isDirectory: true)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.appendingPathComponent(staged.lastPathComponent).path))
+    }
 }

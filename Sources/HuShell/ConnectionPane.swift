@@ -76,6 +76,11 @@ struct ConnectionPane: View {
         .alert("操作失败", isPresented: Binding(get: { tab.errorMessage != nil }, set: { if !$0 { tab.errorMessage = nil } })) {
             Button("好", role: .cancel) { tab.errorMessage = nil }
         } message: { Text(tab.errorMessage ?? "") }
+        .sheet(item: Binding(get: { tab.sudoChallenge }, set: { if $0 == nil { tab.cancelSudoRetry() } })) { challenge in
+            SudoPasswordSheet(challenge: challenge, host: tab.profile.host,
+                              onConfirm: { tab.retryWithSudo(password: $0) },
+                              onCancel: { tab.cancelSudoRetry() })
+        }
         .alert("新建文件夹", isPresented: $showsNewFolder) {
             TextField("文件夹名称", text: $newFolderName)
             Button("创建") { tab.makeDirectory(newFolderName) }
@@ -682,5 +687,41 @@ struct ConnectionPane: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         tab.download(file, to: url)
         showsTransfers = true
+    }
+}
+
+struct SudoPasswordSheet: View {
+    let challenge: SudoChallenge
+    let host: String
+    let onConfirm: (String) -> Void
+    let onCancel: () -> Void
+    @State private var password = ""
+    @FocusState private var passwordFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("需要远端 sudo 权限").font(.headline)
+            Text("\(challenge.action)“\(challenge.target)”时权限不足。请输入服务器 \(host) 上的 sudo 密码。密码仅用于这次重试。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            SecureField("sudo 密码", text: $password)
+                .focused($passwordFocused)
+                .onSubmit(submit)
+            HStack {
+                Spacer()
+                Button("取消") { password = ""; onCancel() }
+                Button("重试", action: submit).buttonStyle(.borderedProminent).disabled(password.isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 390)
+        .onAppear { passwordFocused = true }
+        .onDisappear { password = "" }
+    }
+
+    private func submit() {
+        guard !password.isEmpty else { return }
+        let submitted = password
+        password = ""
+        onConfirm(submitted)
     }
 }

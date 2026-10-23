@@ -18,6 +18,16 @@ enum SSHError: LocalizedError {
     }
 }
 
+enum RemotePermission {
+    static func isDenied(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        if message.contains("permission denied (") || message.contains("authentication failed") {
+            return false
+        }
+        return message.contains("permission denied") || message.contains("operation not permitted")
+    }
+}
+
 final class TransferCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
@@ -339,6 +349,42 @@ enum SSHService {
                      transfer: true, cancellation: cancellation)
     }
 
+    static func uploadWithSudo(profile: ConnectionProfile, local: URL, remote: String,
+                               password: String, cancellation: TransferCancellation? = nil,
+                               onStaged: ((String) -> Void)? = nil) throws {
+        guard safeTargetPath(remote) else { throw SSHError.unsafeTarget }
+        let output = try runRemote(profile: profile, command: "mktemp -d /tmp/hushell-upload.XXXXXXXX")
+        let stagingDirectory = output.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { $0.hasPrefix("/tmp/hushell-upload.") }) ?? ""
+        guard stagingDirectory.hasPrefix("/tmp/hushell-upload."), safeTargetPath(stagingDirectory),
+              !stagingDirectory.contains("\n") else {
+            throw SSHError.command("无法创建远端临时目录")
+        }
+        defer { _ = try? runRemote(profile: profile, command: "rm -rf -- " + shellQuote(stagingDirectory)) }
+        let stagedPath = RemotePath.joined(stagingDirectory, local.lastPathComponent)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory) else {
+            throw SSHError.command("本地文件或文件夹已不存在")
+        }
+        onStaged?(stagedPath)
+        if isDirectory.boolValue {
+            try uploadDirectory(profile: profile, local: local, remoteParent: stagingDirectory,
+                                cancellation: cancellation)
+        } else {
+            try upload(profile: profile, local: local, remote: stagedPath, cancellation: cancellation)
+        }
+        let command = sudoUploadCopyCommand(stagedPath: stagedPath, remote: remote,
+                                            isDirectory: isDirectory.boolValue)
+        try runWithSudo(profile: profile, password: password, command: command, cancellation: cancellation)
+    }
+
+    static func sudoUploadCopyCommand(stagedPath: String, remote: String, isDirectory: Bool) -> String {
+        let destination = isDirectory ? RemotePath.parent(remote) : remote
+        return "cp " + (isDirectory ? "-R " : "") + "-- "
+            + shellQuote(stagedPath) + " " + shellQuote(destination)
+    }
+
     static func remoteDirectorySize(profile: ConnectionProfile, path: String,
                                     cancellation: TransferCancellation? = nil) throws -> Int64 {
         let command = "du -sk " + shellQuote(path)
@@ -367,13 +413,31 @@ enum SSHService {
         _ = try sftp(profile: profile, command: "mkdir " + sftpQuote(path))
     }
 
+    static func makeDirectoryWithSudo(profile: ConnectionProfile, path: String, password: String) throws {
+        try runWithSudo(profile: profile, password: password, command: "mkdir -- " + shellQuote(path))
+    }
+
     static func rename(profile: ConnectionProfile, from: String, to: String) throws {
         _ = try sftp(profile: profile, command: "rename " + sftpQuote(from) + " " + sftpQuote(to))
+    }
+
+    static func renameWithSudo(profile: ConnectionProfile, from: String, to: String, password: String) throws {
+        let script = "[ ! -d \"$2\" ] || { echo '目标已是文件夹' >&2; exit 1; }; mv -- \"$1\" \"$2\""
+        try runWithSudo(profile: profile, password: password,
+                        command: "sh -c " + shellQuote(script) + " hushell "
+                            + shellQuote(from) + " " + shellQuote(to))
     }
 
     static func remove(profile: ConnectionProfile, path: String, isDirectory: Bool) throws {
         guard safeTargetPath(path) else { throw SSHError.unsafeTarget }
         _ = try sftp(profile: profile, command: (isDirectory ? "rmdir " : "rm ") + sftpQuote(path))
+    }
+
+    static func removeWithSudo(profile: ConnectionProfile, path: String, isDirectory: Bool,
+                               fast: Bool, password: String) throws {
+        guard safeTargetPath(path) else { throw SSHError.unsafeTarget }
+        let command = fast ? "rm -rf -- " : isDirectory ? "rmdir -- " : "rm -- "
+        try runWithSudo(profile: profile, password: password, command: command + shellQuote(path))
     }
 
     static func fastRemove(profile: ConnectionProfile, path: String) throws {
@@ -393,11 +457,25 @@ enum SSHService {
         _ = try sftp(profile: profile, command: "chmod \(mode) " + sftpQuote(path))
     }
 
+    static func changePermissionsWithSudo(profile: ConnectionProfile, path: String,
+                                          mode: String, password: String) throws {
+        guard mode.range(of: "^[0-7]{3,4}$", options: .regularExpression) != nil else {
+            throw SSHError.command("权限须为 3 或 4 位八进制数字")
+        }
+        try runWithSudo(profile: profile, password: password,
+                        command: "chmod " + mode + " -- " + shellQuote(path))
+    }
+
     static func createFile(profile: ConnectionProfile, path: String) throws {
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("hushell-empty-\(UUID().uuidString)")
         try Data().write(to: local)
         defer { try? FileManager.default.removeItem(at: local) }
         try upload(profile: profile, local: local, remote: path)
+    }
+
+    static func createFileWithSudo(profile: ConnectionProfile, path: String, password: String) throws {
+        try runWithSudo(profile: profile, password: password,
+                        command: "sh -c " + shellQuote(": > \"$1\"") + " hushell " + shellQuote(path))
     }
 
     static func createArchive(profile: ConnectionProfile, source: String) throws -> String {
@@ -416,6 +494,27 @@ enum SSHService {
     private static func runRemote(profile: ConnectionProfile, command: String) throws -> String {
         let args = options(for: profile) + ["-p", String(profile.port), profile.endpoint, command]
         return try run("/usr/bin/ssh", args: args, profile: profile)
+    }
+
+    private static func runWithSudo(profile: ConnectionProfile, password: String, command: String,
+                                    cancellation: TransferCancellation? = nil) throws {
+        let args = options(for: profile) + ["-T", "-p", String(profile.port), profile.endpoint,
+                                            "sudo -S -p '' -- " + command]
+        do {
+            _ = try run("/usr/bin/ssh", args: args, profile: profile,
+                        input: Data((password + "\n").utf8), timeout: cancellation == nil ? 45 : nil,
+                        cancellation: cancellation)
+        } catch let SSHError.command(message) {
+            let lower = message.lowercased()
+            if lower.contains("sorry, try again") || lower.contains("incorrect password") ||
+                lower.contains("no password was provided") {
+                throw SSHError.command("远端 sudo 密码错误")
+            }
+            if lower.contains("not in the sudoers file") || lower.contains("not allowed to run sudo") {
+                throw SSHError.command("当前账户没有 sudo 权限")
+            }
+            throw SSHError.command(message)
+        }
     }
 
     private static func knownHostsOptions() -> [String] {

@@ -9,6 +9,10 @@ enum TransferErrorSummary {
         summarize(error, action: "删除")
     }
 
+    static func operation(_ error: Error, action: String) -> String {
+        summarize(error, action: action)
+    }
+
     private static func summarize(_ error: Error, action: String) -> String {
         let detail = error.localizedDescription
         let lowercased = detail.lowercased()

@@ -30,4 +30,27 @@ final class TransferErrorSummaryTests: XCTestCase {
         XCTAssertEqual(TransferErrorSummary.delete(SSHError.command("rmdir /srv/project: Directory not empty")),
                        "文件夹非空，无法删除；可使用快速删除")
     }
+
+    func testSudoPromptOnlyFollowsFilePermissionFailures() {
+        XCTAssertTrue(RemotePermission.isDenied(SSHError.command("dest open: Permission denied")))
+        XCTAssertTrue(RemotePermission.isDenied(SSHError.command("rm: Operation not permitted")))
+        XCTAssertFalse(RemotePermission.isDenied(SSHError.command("Permission denied (publickey).")))
+        XCTAssertFalse(RemotePermission.isDenied(SSHError.command("No space left on device")))
+    }
+
+    @MainActor func testOneSudoPromptCanRetrySeveralFailedUploads() {
+        let tab = ConnectionTab(profile: ConnectionProfile(name: "server", host: "localhost", username: "test"),
+                                transferCenter: TransferCenter())
+        var received: [String] = []
+        tab.requestSudo(action: "上传", target: "first.txt") { received.append("first:\($0)") }
+        tab.requestSudo(action: "上传", target: "second.txt") { received.append("second:\($0)") }
+        XCTAssertEqual(tab.sudoChallenge?.target, "first.txt")
+        tab.retryWithSudo(password: "one-use-password")
+        XCTAssertEqual(received, ["first:one-use-password", "second:one-use-password"])
+        XCTAssertNil(tab.sudoChallenge)
+        tab.requestSudo(action: "删除", target: "third.txt") { received.append($0) }
+        tab.cancelSudoRetry()
+        XCTAssertNil(tab.sudoChallenge)
+        XCTAssertEqual(received.count, 2)
+    }
 }

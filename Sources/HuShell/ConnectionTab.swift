@@ -1,5 +1,11 @@
 import Foundation
 
+struct SudoChallenge: Identifiable {
+    let id = UUID()
+    let action: String
+    let target: String
+}
+
 @MainActor final class ConnectionTab: ObservableObject, Identifiable {
     let id = UUID()
     let profile: ConnectionProfile
@@ -17,6 +23,8 @@ import Foundation
     @Published var busy = false
     @Published var status = "准备连接"
     @Published var errorMessage: String?
+    @Published private(set) var sudoChallenge: SudoChallenge?
+    private var sudoRetries: [(String) -> Void] = []
     var onConnect: (() -> Void)?
     var preferredDirectory: (() -> String?)?
     var onDirectoryChanged: ((String) -> Void)?
@@ -106,6 +114,8 @@ import Foundation
         statsLoading = false
         homeDirectoryReady = false
         pendingRevealDirectory = nil
+        sudoChallenge = nil
+        sudoRetries.removeAll()
         terminal.stop()
         connected = false
         status = "未连接"
@@ -308,20 +318,56 @@ import Foundation
         for url in files {
             let remote = RemotePath.joined(directory, url.lastPathComponent)
             transferCenter.upload(profile: profile, local: url, remote: remote) { [weak self] result in
-                guard let self, self.generation == generation else { return }
-                switch result {
-                case .success: self.status = "上传完成"; self.loadFiles()
-                case .failure(let error):
-                    if let sshError = error as? SSHError, case .cancelled = sshError {
-                        self.status = "上传已终止"
-                        self.loadFiles()
-                    } else {
-                        self.status = "上传失败"
-                        self.errorMessage = TransferErrorSummary.upload(error)
-                    }
-                }
+                self?.finishUpload(result, local: url, remote: remote, generation: generation, allowSudo: true)
             }
         }
+    }
+
+    private func finishUpload(_ result: Result<Void, Error>, local: URL, remote: String,
+                              generation: Int, allowSudo: Bool) {
+        guard self.generation == generation else { return }
+        switch result {
+        case .success:
+            status = "上传完成"
+            loadFiles()
+        case .failure(let error):
+            if let sshError = error as? SSHError, case .cancelled = sshError {
+                status = "上传已终止"
+                loadFiles()
+            } else if allowSudo && RemotePermission.isDenied(error) {
+                status = "上传需要 sudo 权限"
+                requestSudo(action: "上传", target: local.lastPathComponent) { [weak self] password in
+                    guard let self, self.generation == generation else { return }
+                    self.status = "正在使用 sudo 上传 \(local.lastPathComponent)"
+                    self.transferCenter.uploadWithSudo(profile: self.profile, local: local, remote: remote,
+                                                       password: password) { [weak self] result in
+                        self?.finishUpload(result, local: local, remote: remote,
+                                           generation: generation, allowSudo: false)
+                    }
+                }
+            } else {
+                status = "上传失败"
+                errorMessage = TransferErrorSummary.upload(error)
+            }
+        }
+    }
+
+    func requestSudo(action: String, target: String, retry: @escaping (String) -> Void) {
+        sudoRetries.append(retry)
+        if sudoChallenge == nil { sudoChallenge = SudoChallenge(action: action, target: target) }
+    }
+
+    func retryWithSudo(password: String) {
+        guard !password.isEmpty else { return }
+        let retries = sudoRetries
+        sudoRetries.removeAll()
+        sudoChallenge = nil
+        retries.forEach { $0(password) }
+    }
+
+    func cancelSudoRetry() {
+        sudoRetries.removeAll()
+        sudoChallenge = nil
     }
 
     func download(_ file: RemoteFile, to local: URL) {
@@ -348,24 +394,20 @@ import Foundation
         guard connected, validNewName(name) else { errorMessage = "请输入有效的文件夹名称"; return }
         let profile = profile
         let path = RemotePath.joined(directory, name)
-        let generation = generation
-        busy = true
-        Task { [weak self] in
-            let result = await Task.detached { Result { try SSHService.makeDirectory(profile: profile, path: path) } }.value
-            guard let self, self.generation == generation else { return }
-            self.busy = false
-            switch result {
-            case .success: self.loadFiles()
-            case .failure(let error): self.errorMessage = error.localizedDescription
-            }
-        }
+        performFileOperation(action: "新建文件夹", target: name,
+                             operation: { try SSHService.makeDirectory(profile: profile, path: path) },
+                             sudoOperation: { try SSHService.makeDirectoryWithSudo(profile: profile, path: path,
+                                                                                   password: $0) })
     }
 
     func createFile(_ name: String) {
         guard connected, validNewName(name) else { errorMessage = "请输入有效的文件名"; return }
         let profile = profile
         let path = RemotePath.joined(directory, name)
-        performFileOperation { try SSHService.createFile(profile: profile, path: path) }
+        performFileOperation(action: "新建文件", target: name,
+                             operation: { try SSHService.createFile(profile: profile, path: path) },
+                             sudoOperation: { try SSHService.createFileWithSudo(profile: profile, path: path,
+                                                                                password: $0) })
     }
 
     func rename(_ file: RemoteFile, to name: String, in directory: String) {
@@ -373,22 +415,35 @@ import Foundation
         let profile = profile
         let from = RemotePath.joined(directory, file.name)
         let to = RemotePath.joined(directory, name)
-        performFileOperation { try SSHService.rename(profile: profile, from: from, to: to) }
+        performFileOperation(action: "重命名", target: file.name,
+                             operation: { try SSHService.rename(profile: profile, from: from, to: to) },
+                             sudoOperation: { try SSHService.renameWithSudo(profile: profile, from: from, to: to,
+                                                                             password: $0) })
     }
 
     func remove(_ file: RemoteFile, fast: Bool) {
         let profile = profile
         let path = RemotePath.joined(directory, file.name)
-        performFileOperation(errorSummary: TransferErrorSummary.delete) {
-            if fast { try SSHService.fastRemove(profile: profile, path: path) }
-            else { try SSHService.remove(profile: profile, path: path, isDirectory: file.isDirectory) }
-        }
+        performFileOperation(action: "删除", target: file.name, errorSummary: TransferErrorSummary.delete,
+                             operation: {
+                                 if fast { try SSHService.fastRemove(profile: profile, path: path) }
+                                 else { try SSHService.remove(profile: profile, path: path,
+                                                              isDirectory: file.isDirectory) }
+                             }, sudoOperation: {
+                                 try SSHService.removeWithSudo(profile: profile, path: path,
+                                                               isDirectory: file.isDirectory, fast: fast,
+                                                               password: $0)
+                             })
     }
 
     func changePermissions(_ file: RemoteFile, mode: String) {
         let profile = profile
         let path = RemotePath.joined(directory, file.name)
-        performFileOperation { try SSHService.changePermissions(profile: profile, path: path, mode: mode) }
+        performFileOperation(action: "修改权限", target: file.name,
+                             operation: { try SSHService.changePermissions(profile: profile, path: path, mode: mode) },
+                             sudoOperation: { try SSHService.changePermissionsWithSudo(profile: profile,
+                                                                                         path: path, mode: mode,
+                                                                                         password: $0) })
     }
 
     private func validNewName(_ name: String) -> Bool {
@@ -396,18 +451,33 @@ import Foundation
         !name.contains("\n") && !name.contains("\r")
     }
 
-    private func performFileOperation(errorSummary: @escaping (Error) -> String = { $0.localizedDescription },
-                                      _ operation: @escaping () throws -> Void) {
+    private func performFileOperation(action: String, target: String,
+                                      errorSummary: ((Error) -> String)? = nil,
+                                      operation: @escaping () throws -> Void,
+                                      sudoOperation: @escaping (String) throws -> Void,
+                                      password: String? = nil) {
         guard connected else { return }
         let generation = generation
         busy = true
         Task { [weak self] in
-            let result = await Task.detached { Result { try operation() } }.value
+            let result = await Task.detached { Result {
+                if let password { try sudoOperation(password) }
+                else { try operation() }
+            } }.value
             guard let self, self.generation == generation else { return }
             self.busy = false
             switch result {
             case .success: self.loadFiles()
-            case .failure(let error): self.errorMessage = errorSummary(error)
+            case .failure(let error):
+                if password == nil && RemotePermission.isDenied(error) {
+                    self.requestSudo(action: action, target: target) { [weak self] password in
+                        self?.performFileOperation(action: action, target: target, errorSummary: errorSummary,
+                                                   operation: operation, sudoOperation: sudoOperation,
+                                                   password: password)
+                    }
+                } else {
+                    self.errorMessage = errorSummary?(error) ?? TransferErrorSummary.operation(error, action: action)
+                }
             }
         }
     }

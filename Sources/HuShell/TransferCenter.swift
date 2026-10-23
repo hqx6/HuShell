@@ -54,6 +54,44 @@ private final class DirectoryUploadProgress: @unchecked Sendable {
     }
 }
 
+private final class SudoUploadProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private let isDirectory: Bool
+    private var stagingPath: String?
+    private var size: Int64?
+
+    init(isDirectory: Bool) { self.isDirectory = isDirectory }
+
+    func prepare(local: URL) {
+        let total = isDirectory ? LocalTransferSize.directory(local)
+            : ((try? FileManager.default.attributesOfItem(atPath: local.path)[.size]) as? NSNumber)?.int64Value ?? 0
+        lock.lock()
+        size = total
+        lock.unlock()
+    }
+
+    func setStagingPath(_ path: String) {
+        lock.lock()
+        stagingPath = path
+        lock.unlock()
+    }
+
+    var totalBytes: Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return size
+    }
+
+    func bytesUploaded(profile: ConnectionProfile) -> Int64? {
+        lock.lock()
+        let path = stagingPath
+        lock.unlock()
+        guard let path else { return nil }
+        if isDirectory { return try? SSHService.remoteDirectorySize(profile: profile, path: path) }
+        return try? SSHService.remoteFileSize(profile: profile, path: path)
+    }
+}
+
 struct TransferRecord: Identifiable {
     let id: UUID
     let direction: TransferDirection
@@ -119,6 +157,28 @@ struct TransferRecord: Identifiable {
               completion: completion)
     }
 
+    func uploadWithSudo(profile: ConnectionProfile, local: URL, remote: String, password: String,
+                        completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory) else {
+            completion(.failure(SSHError.command("本地文件或文件夹已不存在")))
+            return
+        }
+        let progress = SudoUploadProgress(isDirectory: isDirectory.boolValue)
+        let destination: TransferDestination = isDirectory.boolValue
+            ? .remoteDirectory(profile: profile, path: remote)
+            : .remote(profile: profile, filePath: remote)
+        let id = add(direction: .upload, profile: profile, fileName: local.lastPathComponent,
+                     destination: destination, totalBytes: 0)
+        start(id: id, profile: profile, monitor: .stagedUpload(progress),
+              operation: { cancellation in
+                  progress.prepare(local: local)
+                  try SSHService.uploadWithSudo(profile: profile, local: local, remote: remote,
+                                                password: password, cancellation: cancellation,
+                                                onStaged: progress.setStagingPath)
+              }, completion: completion)
+    }
+
     func download(profile: ConnectionProfile, file: RemoteFile, remote: String, local: URL,
                   completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         let id = add(direction: .download, profile: profile, fileName: file.name,
@@ -162,10 +222,13 @@ struct TransferRecord: Identifiable {
         case local(URL)
         case remote(String)
         case remoteDirectory(String, DirectoryUploadProgress)
+        case stagedUpload(SudoUploadProgress)
 
         var keepsProgressIncomplete: Bool {
-            if case .remoteDirectory = self { return true }
-            return false
+            switch self {
+            case .remoteDirectory, .stagedUpload: return true
+            default: return false
+            }
         }
     }
 
@@ -194,9 +257,15 @@ struct TransferRecord: Identifiable {
                             return try? SSHService.remoteFileSize(profile: profile, path: path)
                         case .remoteDirectory(let path, let progress):
                             return progress.bytesUploaded(profile: profile, path: path)
+                        case .stagedUpload(let progress):
+                            return progress.bytesUploaded(profile: profile)
                         }
                     }.value
                     if case .remoteDirectory(_, let progress) = monitor,
+                       let total = progress.totalBytes {
+                        self?.change(id) { $0.totalBytes = total }
+                    }
+                    if case .stagedUpload(let progress) = monitor,
                        let total = progress.totalBytes {
                         self?.change(id) { $0.totalBytes = total }
                     }
@@ -211,6 +280,10 @@ struct TransferRecord: Identifiable {
             poller.cancel()
             self.cancellations.removeValue(forKey: id)
             if case .remoteDirectory(_, let progress) = monitor,
+               let total = progress.totalBytes {
+                self.change(id) { $0.totalBytes = total }
+            }
+            if case .stagedUpload(let progress) = monitor,
                let total = progress.totalBytes {
                 self.change(id) { $0.totalBytes = total }
             }

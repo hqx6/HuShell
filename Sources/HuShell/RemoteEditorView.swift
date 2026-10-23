@@ -40,6 +40,8 @@ struct RemoteEditorSession: Identifiable {
     @Published var savedText: String
     @Published var saving = false
     @Published var errorMessage: String?
+    @Published var sudoChallenge: SudoChallenge?
+    private var pendingSudoSnapshot: String?
     var hasChanges: Bool { text != savedText }
 
     init(session: RemoteEditorSession, onSaved: @escaping () -> Void) {
@@ -51,7 +53,7 @@ struct RemoteEditorSession: Identifiable {
     }
 
     func save() {
-        guard !saving else { return }
+        guard !saving, sudoChallenge == nil else { return }
         let snapshot = text
         let session = session
         saving = true
@@ -65,9 +67,42 @@ struct RemoteEditorSession: Identifiable {
             case .success:
                 savedText = snapshot
                 onSaved()
-            case .failure(let error): errorMessage = error.localizedDescription
+            case .failure(let error):
+                if RemotePermission.isDenied(error) {
+                    pendingSudoSnapshot = snapshot
+                    sudoChallenge = SudoChallenge(action: "保存", target: session.fileName)
+                } else {
+                    errorMessage = TransferErrorSummary.upload(error)
+                }
             }
         }
+    }
+
+    func retryWithSudo(password: String) {
+        guard !password.isEmpty, let snapshot = pendingSudoSnapshot else { return }
+        pendingSudoSnapshot = nil
+        sudoChallenge = nil
+        saving = true
+        let session = session
+        Task {
+            let result = await Task.detached { Result {
+                try SSHService.uploadWithSudo(profile: session.profile, local: session.localURL,
+                                              remote: session.path, password: password)
+            } }.value
+            saving = false
+            switch result {
+            case .success:
+                savedText = snapshot
+                onSaved()
+            case .failure(let error):
+                errorMessage = TransferErrorSummary.upload(error)
+            }
+        }
+    }
+
+    func cancelSudoRetry() {
+        pendingSudoSnapshot = nil
+        sudoChallenge = nil
     }
 }
 
@@ -270,7 +305,7 @@ struct RemoteEditorView: View {
                     .keyboardShortcut("f", modifiers: .command)
                 Button("保存", systemImage: "square.and.arrow.down") { document.save() }
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(document.saving || !document.hasChanges)
+                    .disabled(document.saving || document.sudoChallenge != nil || !document.hasChanges)
                 Button("关闭", action: onClose).disabled(document.saving)
             }
             .padding(.horizontal, 16).frame(height: 52)
@@ -288,6 +323,11 @@ struct RemoteEditorView: View {
         .alert("保存失败", isPresented: Binding(get: { document.errorMessage != nil }, set: { if !$0 { document.errorMessage = nil } })) {
             Button("好", role: .cancel) { document.errorMessage = nil }
         } message: { Text(document.errorMessage ?? "") }
+        .sheet(item: Binding(get: { document.sudoChallenge }, set: { if $0 == nil { document.cancelSudoRetry() } })) { challenge in
+            SudoPasswordSheet(challenge: challenge, host: document.session.profile.host,
+                              onConfirm: { document.retryWithSudo(password: $0) },
+                              onCancel: { document.cancelSudoRetry() })
+        }
     }
 }
 
