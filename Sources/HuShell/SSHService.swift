@@ -78,6 +78,19 @@ enum SSHService {
         return environment
     }
 
+    static func terminalEnvironment(for profile: ConnectionProfile) -> [String: String] {
+        var environment = environment(for: profile)
+        environment.removeValue(forKey: "LC_ALL")
+        if environment["LANG"]?.uppercased().contains("UTF-8") != true {
+            environment["LANG"] = "en_US.UTF-8"
+        }
+        if let characterLocale = environment["LC_CTYPE"],
+           !characterLocale.uppercased().contains("UTF-8") {
+            environment.removeValue(forKey: "LC_CTYPE")
+        }
+        return environment
+    }
+
     static func options(for profile: ConnectionProfile) -> [String] {
         var args = ["-o", "BatchMode=no", "-o", "ConnectTimeout=12", "-o", "ServerAliveInterval=20",
                     "-o", "StrictHostKeyChecking=accept-new", "-o", "NumberOfPasswordPrompts=1"]
@@ -405,7 +418,7 @@ final class TerminalSession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = SSHService.options(for: profile) + ["-tt", "-p", String(profile.port), profile.endpoint]
-        process.environment = SSHService.environment(for: profile)
+        process.environment = SSHService.terminalEnvironment(for: profile)
         process.standardInput = slave
         process.standardOutput = slave
         process.standardError = slave
@@ -425,13 +438,22 @@ final class TerminalSession {
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var buffer = [UInt8](repeating: 0, count: 8192)
+            var decoder = UTF8StreamDecoder()
             while let self, self.master == masterFD, self.generation == currentGeneration {
                 let count = Darwin.read(masterFD, &buffer, buffer.count)
                 if count <= 0 { break }
-                let output = String(decoding: buffer[..<count], as: UTF8.self)
+                let output = decoder.append(buffer[..<count])
+                guard !output.isEmpty else { continue }
                 DispatchQueue.main.async {
                     guard self.generation == currentGeneration else { return }
                     self.onOutput?(output)
+                }
+            }
+            let remainder = decoder.finish()
+            if !remainder.isEmpty {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == currentGeneration else { return }
+                    self.onOutput?(remainder)
                 }
             }
         }
