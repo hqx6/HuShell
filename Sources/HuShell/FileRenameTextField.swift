@@ -1,14 +1,10 @@
 import AppKit
 import SwiftUI
 
-struct DeepSelectionTextField: NSViewRepresentable {
-    static let selectionBackground = NSColor(srgbRed: 0.73, green: 0.84, blue: 1.00, alpha: 1.00)
-    static let selectionForeground = NSColor(srgbRed: 0.08, green: 0.12, blue: 0.23, alpha: 1.00)
-
+struct FileRenameTextField: NSViewRepresentable {
     @Binding var text: String
     let onCommit: () -> Void
     let onCancel: () -> Void
-    let textColor: NSColor
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -16,10 +12,12 @@ struct DeepSelectionTextField: NSViewRepresentable {
         let field = EditableTextField()
         field.stringValue = text
         field.font = .systemFont(ofSize: 11.5)
-        field.textColor = textColor
+        field.textColor = .textColor
+        field.backgroundColor = .textBackgroundColor
+        field.isEditable = true
         field.isBordered = false
         field.isBezeled = false
-        field.drawsBackground = false
+        field.drawsBackground = true
         field.focusRingType = .none
         field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingTail
@@ -29,16 +27,14 @@ struct DeepSelectionTextField: NSViewRepresentable {
 
     func updateNSView(_ field: EditableTextField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != text { field.stringValue = text }
-        field.textColor = textColor
-        field.requestEditingFocus()
+        if field.currentEditor() == nil && field.stringValue != text { field.stringValue = text }
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: DeepSelectionTextField
+        var parent: FileRenameTextField
         private var finishing = false
 
-        init(parent: DeepSelectionTextField) {
+        init(parent: FileRenameTextField) {
             self.parent = parent
         }
 
@@ -78,41 +74,12 @@ struct DeepSelectionTextField: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil { requestEditingFocus() }
-        }
-
-        func requestEditingFocus() {
-            guard window != nil else { return }
-            if requestedFocus, currentEditor() != nil { return }
+            guard window != nil, !requestedFocus else { return }
             requestedFocus = true
             DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.window else { return }
-                window.makeFirstResponder(self)
+                guard let self, self.window != nil else { return }
                 self.selectText(nil)
-                self.applySelectionAppearance()
             }
-        }
-
-        override func becomeFirstResponder() -> Bool {
-            let accepted = super.becomeFirstResponder()
-            if accepted {
-                DispatchQueue.main.async { [weak self] in self?.applySelectionAppearance() }
-            }
-            return accepted
-        }
-
-        override func textDidChange(_ notification: Notification) {
-            super.textDidChange(notification)
-            applySelectionAppearance()
-        }
-
-        private func applySelectionAppearance() {
-            guard let editor = currentEditor() as? NSTextView else { return }
-            editor.selectedTextAttributes = [
-                .backgroundColor: DeepSelectionTextField.selectionBackground,
-                .foregroundColor: DeepSelectionTextField.selectionForeground
-            ]
-            editor.insertionPointColor = .white
         }
     }
 }

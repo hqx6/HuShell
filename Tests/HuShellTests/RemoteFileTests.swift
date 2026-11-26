@@ -1,6 +1,11 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import HuShell
+
+private final class FileBrowserTestWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+}
 
 final class RemoteFileTests: XCTestCase {
     func testAbsolutePathNavigationAndBreadcrumbs() {
@@ -57,76 +62,86 @@ final class RemoteFileTests: XCTestCase {
                        ["alpha", "bravo.txt", "charlie.txt"])
     }
 
-    func testSelectedRowClickRenameWaitsForSingleClick() {
-        typealias Coordinator = FileRowClickObserver.Coordinator
-        XCTAssertTrue(Coordinator.shouldStartRename(isSelected: true, modifiers: []))
-        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: false, modifiers: []))
-        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: true, modifiers: [.shift]))
-        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: true, modifiers: [.command]))
-    }
-
-    func testRenameSelectionUsesFinderStyleLightBlueAndDarkText() {
-        let background = DeepSelectionTextField.selectionBackground.usingColorSpace(.sRGB)
-        let foreground = DeepSelectionTextField.selectionForeground.usingColorSpace(.sRGB)
-        XCTAssertGreaterThan(try XCTUnwrap(background?.redComponent), 0.65)
-        XCTAssertGreaterThan(try XCTUnwrap(background?.blueComponent), 0.90)
-        XCTAssertLessThan(try XCTUnwrap(foreground?.redComponent), 0.20)
-        XCTAssertLessThan(try XCTUnwrap(foreground?.greenComponent), 0.20)
-        XCTAssertLessThan(try XCTUnwrap(foreground?.blueComponent), 0.30)
-    }
-
-    @MainActor func testRenameFieldFocusesAndSelectsWholeFilename() async throws {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 40),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        let field = DeepSelectionTextField.EditableTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 20))
-        field.stringValue = "K860+870.mp4"
-        window.contentView = field
+    @MainActor func testFileBrowserMouseEventsInListAndColumnViews() async throws {
+        _ = NSApplication.shared
+        let folder = RemoteFile(name: "folder", isDirectory: true, size: "", modified: "", permissions: "")
+        let file = RemoteFile(name: "notes.txt", isDirectory: false, size: "0", modified: "", permissions: "")
+        let tab = ConnectionTab(profile: ConnectionProfile(name: "test", host: "localhost", username: "test"),
+                                transferCenter: TransferCenter(),
+                                directoryLoader: { _, path in path == "/" ? [folder, file] : [] })
+        tab.connected = true
+        tab.files = [folder, file]
+        let pane = ConnectionPane(tab: tab, showsFiles: true, filePanelPosition: .bottom,
+                                  onOpenTransferRemote: { _, _ in })
+        let window = FileBrowserTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
+                                            styleMask: [.titled], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: pane)
+        window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        field.requestEditingFocus()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(120))
 
+        func descendants(of view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants(of: $0) } }
+        func click(at point: NSPoint, count: Int = 1, modifiers: NSEvent.ModifierFlags = []) throws {
+            for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
+                                                             timestamp: ProcessInfo.processInfo.systemUptime,
+                                                             windowNumber: window.windowNumber, context: nil,
+                                                             eventNumber: 0, clickCount: count, pressure: 0))
+                window.sendEvent(event)
+            }
+        }
+        func click(_ name: String, count: Int = 1, modifiers: NSEvent.ModifierFlags = []) throws {
+            host.layoutSubtreeIfNeeded()
+            let row = try XCTUnwrap(descendants(of: host).compactMap { $0 as? FileRowClickObserver.ClickView }
+                .first { $0.dragItem?.path == "/\(name)" })
+            try click(at: row.convert(NSPoint(x: row.bounds.width / 3, y: row.bounds.midY), to: nil),
+                      count: count, modifiers: modifiers)
+        }
+
+        let terminal = try XCTUnwrap(descendants(of: host).first { $0 is SearchableTerminalWebView })
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        try click(file.name)
+        XCTAssertEqual(tab.selectedFiles, [file.name], "A first click must select the row immediately")
+        try click(folder.name, modifiers: .shift)
+        XCTAssertEqual(tab.selectedFiles, [file.name, folder.name])
+        try click(file.name)
+        XCTAssertEqual(tab.selectedFiles, [file.name])
+        try click(file.name)
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.15))
+        let field = try XCTUnwrap(descendants(of: host).compactMap { $0 as? FileRenameTextField.EditableTextField }.first)
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
-        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: field.stringValue.utf16.count))
-        window.orderOut(nil)
-    }
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: file.name.utf16.count))
 
-    @MainActor func testSelectedRowSingleClickStartsRename() throws {
-        let coordinator = FileRowClickObserver.Coordinator()
-        var renamed = false
-        coordinator.update(onSelect: { _ in true },
-                           onDoubleClick: {},
-                           onRename: { renamed = true })
-        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
-                                                     modifierFlags: [], timestamp: 0,
-                                                     windowNumber: 0, context: nil,
-                                                     eventNumber: 1, clickCount: 1, pressure: 0))
+        try click(folder.name)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(descendants(of: host).contains { $0 is FileRenameTextField.EditableTextField })
+        try click(folder.name)
+        try click(folder.name, count: 2)
+        XCTAssertEqual(tab.directory, "/folder")
 
-        coordinator.mouseDown(with: event)
-        coordinator.handleSingleClick(NSClickGestureRecognizer())
-        XCTAssertTrue(renamed)
-    }
-
-    @MainActor func testSelectedRowDoubleClickOpensWithoutRenaming() throws {
-        let coordinator = FileRowClickObserver.Coordinator()
-        var renamed = false
-        var opened = false
-        coordinator.update(onSelect: { _ in true },
-                           onDoubleClick: { opened = true },
-                           onRename: { renamed = true })
-        let first = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
-                                                     modifierFlags: [], timestamp: 0,
-                                                     windowNumber: 0, context: nil,
-                                                     eventNumber: 1, clickCount: 1, pressure: 0))
-        let second = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
-                                                      modifierFlags: [], timestamp: 0.1,
-                                                      windowNumber: 0, context: nil,
-                                                      eventNumber: 2, clickCount: 2, pressure: 0))
-
-        coordinator.mouseDown(with: first)
-        coordinator.mouseDown(with: second)
-        coordinator.handleDoubleClick(NSClickGestureRecognizer())
-        XCTAssertTrue(opened)
-        XCTAssertFalse(renamed)
+        tab.goToDirectory("/")
+        try await Task.sleep(for: .milliseconds(120))
+        let breadcrumb = try XCTUnwrap(descendants(of: host).compactMap { $0 as? FileRowClickObserver.ClickView }
+            .first { $0.dragItem == nil })
+        let toolbarY = breadcrumb.convert(NSPoint(x: 0, y: breadcrumb.bounds.midY), to: nil).y
+        try click(at: NSPoint(x: 723, y: toolbarY))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(tab.columns.map(\.path), ["/"])
+        try click(folder.name)
+        XCTAssertEqual(tab.columns.map(\.path), ["/", "/folder"])
+        XCTAssertEqual(tab.columns.first?.selectedName, folder.name)
+        try click(folder.name)
+        XCTAssertEqual(tab.columns.map(\.path), ["/", "/folder"], "A repeat press should keep the child column until editing starts")
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.15))
+        let columnField = try XCTUnwrap(descendants(of: host).compactMap { $0 as? FileRenameTextField.EditableTextField }.first)
+        let columnEditor = try XCTUnwrap(columnField.currentEditor() as? NSTextView)
+        XCTAssertEqual(columnEditor.selectedRange(), NSRange(location: 0, length: folder.name.utf16.count))
+        columnEditor.insertText("renamed", replacementRange: columnEditor.selectedRange())
+        XCTAssertEqual(columnEditor.string, "renamed")
+        columnEditor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(descendants(of: host).contains { $0 is FileRenameTextField.EditableTextField })
     }
 
     func testLegacySFTPListingUsesFourDigitYearAndSeconds() throws {

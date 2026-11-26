@@ -15,6 +15,7 @@ private struct DeleteRequest {
 }
 
 private struct RenameTarget {
+    let id = UUID()
     let file: RemoteFile
     let directory: String
 }
@@ -359,21 +360,27 @@ struct ConnectionPane: View {
         .overlay {
             if !isRenaming(file, in: directory) {
                 FileRowClickObserver(onSelect: { modifiers in
-                    let wasSelected = tab.columns.indices.contains(index)
-                        && (tab.columns[index].selectedNames.contains(file.name)
-                            || tab.columns[index].selectedName == file.name)
-                    if selected && !modifiers.contains(.shift) {
-                        tab.selectColumnFile(file, at: index)
-                    } else {
-                        let visibleFiles = fileSort.files(tab.columns[index].files)
-                        tab.selectColumnItem(file, at: index, among: visibleFiles,
-                                             extending: modifiers.contains(.shift))
+                    guard tab.columns.indices.contains(index), tab.columns[index].path == directory else { return false }
+                    let column = tab.columns[index]
+                    let wasSelected = column.selectedName == file.name && column.selectedNames.count <= 1
+                    let extending = modifiers.contains(.shift)
+                    if !wasSelected || extending {
+                        tab.selectColumnItem(file, at: index,
+                                             among: extending ? fileSort.files(column.files) : [],
+                                             extending: extending)
                     }
                     return wasSelected
                 }, onDoubleClick: {
+                    guard tab.columns.indices.contains(index), tab.columns[index].path == directory else { return }
                     if file.isDirectory { tab.openColumnFolder(file, at: index) }
-                    else { open(file) }
+                    else {
+                        tab.selectColumnFile(file, at: index)
+                        open(file)
+                    }
                 }, onRename: {
+                    guard tab.columns.indices.contains(index), tab.columns[index].path == directory,
+                          tab.columns[index].selectedName == file.name else { return }
+                    if tab.directory != directory { tab.selectColumnFile(file, at: index) }
                     beginRename(file, in: directory)
                 }, dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: RemotePath.joined(directory, file.name),
@@ -473,11 +480,12 @@ struct ConnectionPane: View {
         .overlay {
             if !isRenaming(file, in: directory) {
                 FileRowClickObserver(onSelect: { modifiers in
-                    let wasSelected = tab.selectedFiles.contains(file.name)
-                    tab.selectFile(file, among: fileSort.files(tab.files),
-                                   extending: modifiers.contains(.shift))
+                    let wasSelected = tab.selectedFile == file.name && tab.selectedFiles.count == 1
+                    let extending = modifiers.contains(.shift)
+                    tab.selectFile(file, among: extending ? fileSort.files(tab.files) : [], extending: extending)
                     return wasSelected
-                }, onDoubleClick: { open(file) }, onRename: {
+                }, onDoubleClick: { open(file) }, onRename: file.name == ".." ? nil : {
+                    guard tab.directory == directory, tab.selectedFile == file.name else { return }
                     beginRename(file, in: directory)
                 }, dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: dropDirectory(for: file, in: directory),
@@ -512,12 +520,16 @@ struct ConnectionPane: View {
     }
 
     @ViewBuilder private func fileName(_ file: RemoteFile, in directory: String) -> some View {
-        if isRenaming(file, in: directory) {
-            DeepSelectionTextField(text: $renameName,
-                                   onCommit: commitRename,
-                                   onCancel: cancelRename,
-                                   textColor: .white)
+        if let target = renameTarget, isRenaming(file, in: directory) {
+            FileRenameTextField(text: $renameName,
+                                onCommit: { commitRename(target) },
+                                onCancel: { if renameTarget?.id == target.id { renameTarget = nil } })
                 .frame(height: 20)
+                .background {
+                    OutsideClickObserver { commitRename(target) }
+                        .allowsHitTesting(false)
+                }
+                .id(target.id)
         } else {
             Text(file.name).lineLimit(1)
         }
@@ -528,15 +540,11 @@ struct ConnectionPane: View {
         renameName = file.name
     }
 
-    private func commitRename() {
-        guard let target = renameTarget else { return }
+    private func commitRename(_ target: RenameTarget) {
+        guard renameTarget?.id == target.id else { return }
         let name = renameName
         renameTarget = nil
         if name != target.file.name { tab.rename(target.file, to: name, in: target.directory) }
-    }
-
-    private func cancelRename() {
-        renameTarget = nil
     }
 
     private func formattedSize(_ raw: String) -> String {
