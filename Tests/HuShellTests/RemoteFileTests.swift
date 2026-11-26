@@ -58,13 +58,11 @@ final class RemoteFileTests: XCTestCase {
     }
 
     func testSelectedRowClickRenameWaitsForSingleClick() {
-        typealias ClickView = FileRowClickObserver.ClickView
-        XCTAssertTrue(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: []))
-        XCTAssertTrue(ClickView.shouldScheduleRename(isSelected: true, clickCount: 0, modifiers: []))
-        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: false, clickCount: 1, modifiers: []))
-        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 2, modifiers: []))
-        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.shift]))
-        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.command]))
+        typealias Coordinator = FileRowClickObserver.Coordinator
+        XCTAssertTrue(Coordinator.shouldStartRename(isSelected: true, modifiers: []))
+        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: false, modifiers: []))
+        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: true, modifiers: [.shift]))
+        XCTAssertFalse(Coordinator.shouldStartRename(isSelected: true, modifiers: [.command]))
     }
 
     func testRenameSelectionUsesFinderStyleLightBlueAndDarkText() {
@@ -92,30 +90,29 @@ final class RemoteFileTests: XCTestCase {
         window.orderOut(nil)
     }
 
-    @MainActor func testSelectedRowStartsRenameAfterSingleClickDelay() async throws {
-        let view = FileRowClickObserver.ClickView(frame: .zero)
+    @MainActor func testSelectedRowSingleClickStartsRename() throws {
+        let coordinator = FileRowClickObserver.Coordinator()
         var renamed = false
-        view.isSelected = true
-        view.onSelect = { _ in true }
-        view.onRename = { renamed = true }
+        coordinator.update(onSelect: { _ in true },
+                           onDoubleClick: {},
+                           onRename: { renamed = true })
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
                                                      modifierFlags: [], timestamp: 0,
                                                      windowNumber: 0, context: nil,
                                                      eventNumber: 1, clickCount: 1, pressure: 0))
 
-        view.mouseDown(with: event)
-        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
+        coordinator.mouseDown(with: event)
+        coordinator.handleSingleClick(NSClickGestureRecognizer())
         XCTAssertTrue(renamed)
     }
 
-    @MainActor func testSelectedRowDoubleClickCancelsRename() async throws {
-        let view = FileRowClickObserver.ClickView(frame: .zero)
+    @MainActor func testSelectedRowDoubleClickOpensWithoutRenaming() throws {
+        let coordinator = FileRowClickObserver.Coordinator()
         var renamed = false
         var opened = false
-        view.isSelected = true
-        view.onSelect = { _ in true }
-        view.onRename = { renamed = true }
-        view.onDoubleClick = { opened = true }
+        coordinator.update(onSelect: { _ in true },
+                           onDoubleClick: { opened = true },
+                           onRename: { renamed = true })
         let first = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
                                                      modifierFlags: [], timestamp: 0,
                                                      windowNumber: 0, context: nil,
@@ -125,9 +122,9 @@ final class RemoteFileTests: XCTestCase {
                                                       windowNumber: 0, context: nil,
                                                       eventNumber: 2, clickCount: 2, pressure: 0))
 
-        view.mouseDown(with: first)
-        view.mouseDown(with: second)
-        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
+        coordinator.mouseDown(with: first)
+        coordinator.mouseDown(with: second)
+        coordinator.handleDoubleClick(NSClickGestureRecognizer())
         XCTAssertTrue(opened)
         XCTAssertFalse(renamed)
     }

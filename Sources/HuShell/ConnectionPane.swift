@@ -375,7 +375,7 @@ struct ConnectionPane: View {
                     else { open(file) }
                 }, onRename: {
                     beginRename(file, in: directory)
-                }, isSelected: selected, dragItem: dragItem(for: file, in: directory),
+                }, dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: RemotePath.joined(directory, file.name),
                                                              profileID: tab.profile.id) } : nil,
                     onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
@@ -479,7 +479,7 @@ struct ConnectionPane: View {
                     return wasSelected
                 }, onDoubleClick: { open(file) }, onRename: {
                     beginRename(file, in: directory)
-                }, isSelected: tab.selectedFiles.contains(file.name), dragItem: dragItem(for: file, in: directory),
+                }, dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: dropDirectory(for: file, in: directory),
                                                              profileID: tab.profile.id) } : nil,
                     onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
