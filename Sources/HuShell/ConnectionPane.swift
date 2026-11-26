@@ -40,7 +40,6 @@ struct ConnectionPane: View {
     @State private var showsNewFile = false
     @State private var renameTarget: RenameTarget?
     @State private var renameName = ""
-    @FocusState private var renameFocused: Bool
     @State private var permissionsFile: RemoteFile?
     @State private var permissionsMode = ""
     @State private var deleteRequest: DeleteRequest?
@@ -506,19 +505,10 @@ struct ConnectionPane: View {
 
     @ViewBuilder private func fileName(_ file: RemoteFile, in directory: String) -> some View {
         if isRenaming(file, in: directory) {
-            TextField("文件名", text: $renameName)
-                .textFieldStyle(.plain)
-                .tint(Color(red: 0.03, green: 0.28, blue: 0.70))
-                .focused($renameFocused)
-                .onSubmit { commitRename() }
-                .onExitCommand { cancelRename() }
-                .background {
-                    OutsideClickObserver { commitRename() }
-                        .allowsHitTesting(false)
-                }
-                .onChange(of: renameFocused) { _, focused in
-                    if !focused && isRenaming(file, in: directory) { commitRename() }
-                }
+            DeepSelectionTextField(text: $renameName,
+                                   onCommit: commitRename,
+                                   onCancel: cancelRename)
+                .frame(height: 20)
         } else {
             Text(file.name).lineLimit(1)
         }
@@ -527,20 +517,17 @@ struct ConnectionPane: View {
     private func beginRename(_ file: RemoteFile, in directory: String) {
         renameTarget = RenameTarget(file: file, directory: directory)
         renameName = file.name
-        DispatchQueue.main.async { if renameTarget != nil { renameFocused = true } }
     }
 
     private func commitRename() {
         guard let target = renameTarget else { return }
         let name = renameName
         renameTarget = nil
-        renameFocused = false
         if name != target.file.name { tab.rename(target.file, to: name, in: target.directory) }
     }
 
     private func cancelRename() {
         renameTarget = nil
-        renameFocused = false
     }
 
     private func formattedSize(_ raw: String) -> String {

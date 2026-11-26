@@ -67,6 +67,16 @@ final class RemoteFileTests: XCTestCase {
         XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.command]))
     }
 
+    func testRenameSelectionUsesDeepBlueBackgroundAndWhiteText() {
+        let background = DeepSelectionTextField.selectionBackground.usingColorSpace(.sRGB)
+        let foreground = DeepSelectionTextField.selectionForeground.usingColorSpace(.sRGB)
+        XCTAssertLessThan(try XCTUnwrap(background?.redComponent), 0.10)
+        XCTAssertGreaterThan(try XCTUnwrap(background?.blueComponent), 0.60)
+        XCTAssertEqual(try XCTUnwrap(foreground?.redComponent), 1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(foreground?.greenComponent), 1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(foreground?.blueComponent), 1, accuracy: 0.001)
+    }
+
     @MainActor func testSelectedRowStartsRenameAfterSingleClickDelay() async throws {
         let view = FileRowClickObserver.ClickView(frame: .zero)
         var renamed = false
