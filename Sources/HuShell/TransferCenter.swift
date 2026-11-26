@@ -381,21 +381,29 @@ struct TransferCenterView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("文件传输").font(.system(size: 15, weight: .semibold))
+                Text("文件传输").font(.system(size: 13, weight: .semibold))
                 if center.activeCount > 0 {
-                    Text("\(center.activeCount) 项进行中").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("\(center.activeCount) 项进行中").foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("全部终止") { center.cancelAll() }
-                    .font(.system(size: 11)).disabled(center.activeCount == 0)
+                    .disabled(center.activeCount == 0)
                 Button("清除记录") { center.clearFinished() }
-                    .font(.system(size: 11)).disabled(center.items.allSatisfy { $0.phase == .running || $0.phase == .waiting })
+                    .disabled(center.items.allSatisfy { $0.phase == .running || $0.phase == .waiting })
             }
             .padding(15)
             Divider()
             if center.items.isEmpty {
-                ContentUnavailableView("暂无传输", systemImage: "arrow.up.arrow.down", description: Text("拖入文件或文件夹，或使用上传、下载按钮开始传输"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text("暂无传输").font(.system(size: 12, weight: .semibold))
+                    Text("拖入文件或文件夹，或使用上传、下载按钮开始传输")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -407,6 +415,7 @@ struct TransferCenterView: View {
                 }
             }
         }
+        .font(.system(size: 11))
         .frame(width: 470, height: 420)
         .background(Color(nsColor: NSColor.windowBackgroundColor.withAlphaComponent(1)))
         .alert("无法打开所在目录", isPresented: Binding(get: { locationError != nil },
@@ -425,7 +434,7 @@ struct TransferCenterView: View {
                         .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(item.fileName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(item.fileName).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
                             Spacer()
                             if item.phase == .completed, let finishedAt = item.finishedAt {
                                 Text(Self.completionTimeFormatter.string(from: finishedAt))
@@ -438,6 +447,7 @@ struct TransferCenterView: View {
                             Image(systemName: "folder").foregroundStyle(.secondary)
                                 .font(.system(size: 10))
                         }
+                        .font(.system(size: 10.5))
                         HStack {
                             Text("\(item.direction.rawValue) · \(item.profileName)")
                             Spacer()
