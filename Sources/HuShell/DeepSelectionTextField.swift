@@ -2,12 +2,13 @@ import AppKit
 import SwiftUI
 
 struct DeepSelectionTextField: NSViewRepresentable {
-    static let selectionBackground = NSColor(srgbRed: 0.03, green: 0.28, blue: 0.70, alpha: 0.94)
-    static let selectionForeground = NSColor.white
+    static let selectionBackground = NSColor(srgbRed: 0.73, green: 0.84, blue: 1.00, alpha: 1.00)
+    static let selectionForeground = NSColor(srgbRed: 0.08, green: 0.12, blue: 0.23, alpha: 1.00)
 
     @Binding var text: String
     let onCommit: () -> Void
     let onCancel: () -> Void
+    let textColor: NSColor
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -15,7 +16,7 @@ struct DeepSelectionTextField: NSViewRepresentable {
         let field = EditableTextField()
         field.stringValue = text
         field.font = .systemFont(ofSize: 11.5)
-        field.textColor = .labelColor
+        field.textColor = textColor
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
@@ -29,6 +30,7 @@ struct DeepSelectionTextField: NSViewRepresentable {
     func updateNSView(_ field: EditableTextField, context: Context) {
         context.coordinator.parent = self
         if field.stringValue != text { field.stringValue = text }
+        field.textColor = textColor
         field.requestEditingFocus()
     }
 
@@ -74,6 +76,11 @@ struct DeepSelectionTextField: NSViewRepresentable {
     final class EditableTextField: NSTextField {
         private var requestedFocus = false
 
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { requestEditingFocus() }
+        }
+
         func requestEditingFocus() {
             guard window != nil else { return }
             if requestedFocus, currentEditor() != nil { return }
@@ -105,7 +112,7 @@ struct DeepSelectionTextField: NSViewRepresentable {
                 .backgroundColor: DeepSelectionTextField.selectionBackground,
                 .foregroundColor: DeepSelectionTextField.selectionForeground
             ]
-            editor.insertionPointColor = DeepSelectionTextField.selectionBackground
+            editor.insertionPointColor = .white
         }
     }
 }

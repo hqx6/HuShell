@@ -19,6 +19,8 @@ private struct RenameTarget {
     let directory: String
 }
 
+private let selectedRowColor = Color(red: 0.02, green: 0.38, blue: 0.82)
+
 struct ConnectionPane: View {
     @ObservedObject var tab: ConnectionTab
     @ObservedObject private var transferCenter: TransferCenter
@@ -343,14 +345,16 @@ struct ConnectionPane: View {
         let directory = tab.columns[index].path
         return HStack(spacing: 8) {
             Image(systemName: file.isDirectory ? "folder.fill" : "doc.text")
-                .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
+                .foregroundStyle(selected ? Color.white
+                                          : (file.isDirectory ? Color.accentColor : Color.secondary))
                 .frame(width: 17)
             fileName(file, in: directory).frame(maxWidth: .infinity, alignment: .leading)
             if file.isDirectory { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
         }
         .font(.system(size: 11.5))
+        .foregroundStyle(selected ? Color.white : Color.primary)
         .padding(.horizontal, 10).frame(height: 27)
-        .background(selected ? Color.accentColor.opacity(0.16) : .clear)
+        .background(selected ? selectedRowColor : .clear)
         .contentShape(Rectangle())
         .overlay {
             if !isRenaming(file, in: directory) {
@@ -449,7 +453,9 @@ struct ConnectionPane: View {
         let directory = tab.directory
         return HStack(spacing: 8) {
             Image(systemName: file.isDirectory ? "folder.fill" : "doc.text")
-                .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
+                .foregroundStyle(tab.selectedFiles.contains(file.name)
+                                 ? Color.white
+                                 : (file.isDirectory ? Color.accentColor : Color.secondary))
                 .frame(width: 18)
             fileName(file, in: directory).frame(maxWidth: .infinity, alignment: .leading)
             Text(file.isDirectory ? "—" : formattedSize(file.size)).frame(width: 85, alignment: .trailing)
@@ -458,9 +464,11 @@ struct ConnectionPane: View {
                 .frame(width: 155, alignment: .trailing)
         }
         .font(.system(size: 11.5))
+        .foregroundStyle(tab.selectedFiles.contains(file.name) && file.name != ".."
+                         ? Color.white : Color.primary)
         .padding(.horizontal, 18).frame(height: 29)
         .background(tab.selectedFiles.contains(file.name) && file.name != ".."
-                    ? Color.accentColor.opacity(0.13) : .clear)
+                    ? selectedRowColor : .clear)
         .contentShape(Rectangle())
         .overlay {
             if !isRenaming(file, in: directory) {
@@ -507,7 +515,8 @@ struct ConnectionPane: View {
         if isRenaming(file, in: directory) {
             DeepSelectionTextField(text: $renameName,
                                    onCommit: commitRename,
-                                   onCancel: cancelRename)
+                                   onCancel: cancelRename,
+                                   textColor: .white)
                 .frame(height: 20)
         } else {
             Text(file.name).lineLimit(1)

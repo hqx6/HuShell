@@ -67,14 +67,29 @@ final class RemoteFileTests: XCTestCase {
         XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.command]))
     }
 
-    func testRenameSelectionUsesDeepBlueBackgroundAndWhiteText() {
+    func testRenameSelectionUsesFinderStyleLightBlueAndDarkText() {
         let background = DeepSelectionTextField.selectionBackground.usingColorSpace(.sRGB)
         let foreground = DeepSelectionTextField.selectionForeground.usingColorSpace(.sRGB)
-        XCTAssertLessThan(try XCTUnwrap(background?.redComponent), 0.10)
-        XCTAssertGreaterThan(try XCTUnwrap(background?.blueComponent), 0.60)
-        XCTAssertEqual(try XCTUnwrap(foreground?.redComponent), 1, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(foreground?.greenComponent), 1, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(foreground?.blueComponent), 1, accuracy: 0.001)
+        XCTAssertGreaterThan(try XCTUnwrap(background?.redComponent), 0.65)
+        XCTAssertGreaterThan(try XCTUnwrap(background?.blueComponent), 0.90)
+        XCTAssertLessThan(try XCTUnwrap(foreground?.redComponent), 0.20)
+        XCTAssertLessThan(try XCTUnwrap(foreground?.greenComponent), 0.20)
+        XCTAssertLessThan(try XCTUnwrap(foreground?.blueComponent), 0.30)
+    }
+
+    @MainActor func testRenameFieldFocusesAndSelectsWholeFilename() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 40),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let field = DeepSelectionTextField.EditableTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 20))
+        field.stringValue = "K860+870.mp4"
+        window.contentView = field
+        window.makeKeyAndOrderFront(nil)
+        field.requestEditingFocus()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: field.stringValue.utf16.count))
+        window.orderOut(nil)
     }
 
     @MainActor func testSelectedRowStartsRenameAfterSingleClickDelay() async throws {
