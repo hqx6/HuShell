@@ -20,6 +20,7 @@ struct SudoChallenge: Identifiable {
     @Published var columns: [RemoteColumn] = []
     @Published var directory = "/"
     @Published var selectedFile: String?
+    @Published var selectedFiles: Set<String> = []
     @Published var busy = false
     @Published var status = "准备连接"
     @Published var errorMessage: String?
@@ -43,6 +44,7 @@ struct SudoChallenge: Identifiable {
     private var homeDirectory = "/"
     private var homeDirectoryReady = false
     private var pendingRevealDirectory: String?
+    private var selectionAnchor: String?
 
     func findInTerminal() { findRequest &+= 1 }
 
@@ -120,6 +122,7 @@ struct SudoChallenge: Identifiable {
         status = "未连接"
         files = []
         columns = []
+        clearFileSelection()
         stats = HostStats()
         busy = false
     }
@@ -193,12 +196,18 @@ struct SudoChallenge: Identifiable {
                 }
                 if self.directory == path {
                     self.files = value
-                    if let selected = self.selectedFile, !value.contains(where: { $0.name == selected }) {
-                        self.selectedFile = nil
-                    }
+                    self.pruneFileSelection(to: value)
                 }
                 if let index = self.columns.firstIndex(where: { $0.path == path }) {
                     self.columns[index].files = value
+                    let names = Set(value.map(\.name))
+                    self.columns[index].selectedNames.formIntersection(names)
+                    if let selected = self.columns[index].selectedName, !names.contains(selected) {
+                        self.columns[index].selectedName = nil
+                    }
+                    if let anchor = self.columns[index].selectionAnchor, !names.contains(anchor) {
+                        self.columns[index].selectionAnchor = nil
+                    }
                 }
             case .failure(let error):
                 self.directoryErrors[path] = error.localizedDescription
@@ -263,7 +272,7 @@ struct SudoChallenge: Identifiable {
         directory = path
         if remember { onDirectoryChanged?(path) }
         files = directoryCache[path]?.files ?? columns.first(where: { $0.path == path })?.files ?? []
-        selectedFile = nil
+        clearFileSelection()
         if usesColumns { rebuildColumns() }
         else { columns = [] }
         busy = loadingDirectories.contains(path)
@@ -288,10 +297,17 @@ struct SudoChallenge: Identifiable {
         let crumbs = RemotePath.breadcrumbs(directory)
         let previous = columns
         columns = crumbs.enumerated().map { index, crumb in
-            RemoteColumn(path: crumb.path,
-                         files: directoryCache[crumb.path]?.files
-                            ?? (crumb.path == directory ? files : previous.first(where: { $0.path == crumb.path })?.files ?? []),
-                         selectedName: index + 1 < crumbs.count ? crumbs[index + 1].name : selectedFile)
+            let previousColumn = previous.first(where: { $0.path == crumb.path })
+            return RemoteColumn(path: crumb.path,
+                                files: directoryCache[crumb.path]?.files
+                                   ?? (crumb.path == directory ? files : previousColumn?.files ?? []),
+                                selectedName: index + 1 < crumbs.count ? crumbs[index + 1].name : selectedFile,
+                                selectedNames: index + 1 < crumbs.count
+                                   ? [crumbs[index + 1].name]
+                                   : (previousColumn?.selectedNames ?? selectedFiles),
+                                selectionAnchor: index + 1 < crumbs.count
+                                   ? crumbs[index + 1].name
+                                   : (previousColumn?.selectionAnchor ?? selectionAnchor))
         }
         // Fill the visible folder first; ancestor columns can arrive afterwards.
         for crumb in crumbs.reversed() { requestDirectory(crumb.path) }
@@ -302,10 +318,53 @@ struct SudoChallenge: Identifiable {
         goToDirectory(RemotePath.joined(columns[index].path, file.name))
     }
 
+    func selectFile(_ file: RemoteFile, among visibleFiles: [RemoteFile], extending: Bool) {
+        guard file.name != ".." else {
+            clearFileSelection()
+            return
+        }
+        if extending {
+            selectedFiles = RemoteFileSelection.names(in: visibleFiles,
+                                                      anchor: selectionAnchor ?? selectedFile,
+                                                      through: file.name)
+        } else {
+            selectedFiles = [file.name]
+            selectionAnchor = file.name
+        }
+        selectedFile = file.name
+    }
+
+    func selectColumnItem(_ file: RemoteFile, at index: Int,
+                          among visibleFiles: [RemoteFile], extending: Bool) {
+        guard columns.indices.contains(index) else { return }
+        if extending {
+            columns = Array(columns.prefix(index + 1))
+            let anchor = columns[index].selectionAnchor
+                ?? columns[index].selectedName
+                ?? selectedFile
+            columns[index].selectedNames = RemoteFileSelection.names(in: visibleFiles,
+                                                                     anchor: anchor,
+                                                                     through: file.name)
+            if columns[index].selectionAnchor == nil {
+                columns[index].selectionAnchor = anchor ?? file.name
+            }
+            columns[index].selectedName = file.name
+            updateFromColumn(index)
+            return
+        }
+        if file.isDirectory {
+            openColumnFolder(file, at: index)
+        } else {
+            selectColumnFile(file, at: index)
+        }
+    }
+
     func selectColumnFile(_ file: RemoteFile, at index: Int) {
         guard columns.indices.contains(index) else { return }
         columns = Array(columns.prefix(index + 1))
         columns[index].selectedName = file.name
+        columns[index].selectedNames = [file.name]
+        columns[index].selectionAnchor = file.name
         let path = columns[index].path
         if directory != path {
             directory = path
@@ -313,7 +372,39 @@ struct SudoChallenge: Identifiable {
         }
         files = columns[index].files
         selectedFile = file.name
+        selectedFiles = [file.name]
+        selectionAnchor = file.name
         busy = loadingDirectories.contains(directory)
+    }
+
+    private func updateFromColumn(_ index: Int) {
+        let column = columns[index]
+        if directory != column.path {
+            directory = column.path
+            onDirectoryChanged?(column.path)
+        }
+        files = column.files
+        selectedFile = column.selectedName
+        selectedFiles = column.selectedNames
+        selectionAnchor = column.selectionAnchor
+        busy = loadingDirectories.contains(directory)
+    }
+
+    private func clearFileSelection() {
+        selectedFile = nil
+        selectedFiles = []
+        selectionAnchor = nil
+    }
+
+    private func pruneFileSelection(to files: [RemoteFile]) {
+        let names = Set(files.map(\.name))
+        selectedFiles.formIntersection(names)
+        if let selected = selectedFile, !names.contains(selected) {
+            selectedFile = nil
+        }
+        if let anchor = selectionAnchor, !names.contains(anchor) {
+            selectionAnchor = nil
+        }
     }
 
     func upload(_ urls: [URL]) {
@@ -449,8 +540,13 @@ struct SudoChallenge: Identifiable {
                                      self.goToDirectory(relocated)
                                  }
                              })
-        if selectedFile == String(source.split(separator: "/").last ?? ""), directory == sourceDirectory {
-            selectedFile = nil
+        if directory == sourceDirectory {
+            let sourceName = String(source.split(separator: "/").last ?? "")
+            selectedFiles.remove(sourceName)
+            if selectedFile == sourceName {
+                selectedFile = selectedFiles.first
+                selectionAnchor = selectedFile
+            }
         }
         status = "正在移动到 \(RemotePath.parent(target))"
     }

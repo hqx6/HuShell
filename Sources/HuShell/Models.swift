@@ -194,6 +194,8 @@ struct RemoteColumn: Identifiable {
     let path: String
     var files: [RemoteFile]
     var selectedName: String?
+    var selectedNames: Set<String> = []
+    var selectionAnchor: String?
     var id: String { path }
 }
 

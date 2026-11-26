@@ -143,8 +143,9 @@ struct ConnectionPane: View {
                                 .foregroundStyle(crumb.path == tab.directory ? Color.primary : Color.accentColor)
                                 .padding(.horizontal, 3).padding(.vertical, 4)
                                 .contentShape(Rectangle())
-                                .overlay(FileRowClickObserver(onSelect: {
+                                .overlay(FileRowClickObserver(onSelect: { _ in
                                     tab.goToDirectory(crumb.path)
+                                    return false
                                 }, onDoubleClick: { beginPathEdit() },
                                     canDrop: { $0.canMove(to: crumb.path, profileID: tab.profile.id) },
                                     onDrop: { tab.moveRemoteItem(from: $0.path, to: crumb.path) }))
@@ -219,7 +220,9 @@ struct ConnectionPane: View {
                     }
                 }
                 fileButton("arrow.up.doc", help: "上传文件", enabled: tab.connected && !tab.busy, action: upload)
-                fileButton("arrow.down.doc", help: "下载选中文件", enabled: tab.connected && tab.selectedFile != nil && !tab.busy, action: downloadSelected)
+                fileButton("arrow.down.doc", help: "下载选中文件",
+                           enabled: tab.connected && !selectedDownloadFiles.isEmpty && !tab.busy,
+                           action: downloadSelected)
                 fileButton("folder.badge.plus", help: "新建文件夹", enabled: tab.connected && !tab.busy) {
                     newFolderName = ""; showsNewFolder = true
                 }
@@ -298,7 +301,9 @@ struct ConnectionPane: View {
                                     Text("目录为空").font(.caption).foregroundStyle(.secondary).padding(.vertical, 20)
                                 }
                                 ForEach(fileSort.files(column.files)) { file in
-                                    columnRow(file, index: index, selected: column.selectedName == file.name)
+                                    columnRow(file, index: index,
+                                              selected: column.selectedNames.contains(file.name)
+                                                || column.selectedName == file.name)
                                 }
                             }
                             .padding(.vertical, 5)
@@ -350,12 +355,24 @@ struct ConnectionPane: View {
         .contentShape(Rectangle())
         .overlay {
             if !isRenaming(file, in: directory) {
-                FileRowClickObserver(onSelect: {
-                    if file.isDirectory { tab.openColumnFolder(file, at: index) }
-                    else { tab.selectColumnFile(file, at: index) }
+                FileRowClickObserver(onSelect: { modifiers in
+                    let wasSelected = tab.columns.indices.contains(index)
+                        && (tab.columns[index].selectedNames.contains(file.name)
+                            || tab.columns[index].selectedName == file.name)
+                    if selected && !modifiers.contains(.shift) {
+                        tab.selectColumnFile(file, at: index)
+                    } else {
+                        let visibleFiles = fileSort.files(tab.columns[index].files)
+                        tab.selectColumnItem(file, at: index, among: visibleFiles,
+                                             extending: modifiers.contains(.shift))
+                    }
+                    return wasSelected
                 }, onDoubleClick: {
-                    if !file.isDirectory { open(file) }
-                }, dragItem: dragItem(for: file, in: directory),
+                    if file.isDirectory { tab.openColumnFolder(file, at: index) }
+                    else { open(file) }
+                }, onRename: {
+                    beginRename(file, in: directory)
+                }, isSelected: selected, dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: RemotePath.joined(directory, file.name),
                                                              profileID: tab.profile.id) } : nil,
                     onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
@@ -443,13 +460,19 @@ struct ConnectionPane: View {
         }
         .font(.system(size: 11.5))
         .padding(.horizontal, 18).frame(height: 29)
-        .background(tab.selectedFile == file.name && file.name != ".." ? Color.accentColor.opacity(0.13) : .clear)
+        .background(tab.selectedFiles.contains(file.name) && file.name != ".."
+                    ? Color.accentColor.opacity(0.13) : .clear)
         .contentShape(Rectangle())
         .overlay {
             if !isRenaming(file, in: directory) {
-                FileRowClickObserver(onSelect: {
-                    tab.selectedFile = file.name == ".." ? nil : file.name
-                }, onDoubleClick: { open(file) }, dragItem: dragItem(for: file, in: directory),
+                FileRowClickObserver(onSelect: { modifiers in
+                    let wasSelected = tab.selectedFiles.contains(file.name)
+                    tab.selectFile(file, among: fileSort.files(tab.files),
+                                   extending: modifiers.contains(.shift))
+                    return wasSelected
+                }, onDoubleClick: { open(file) }, onRename: {
+                    beginRename(file, in: directory)
+                }, isSelected: tab.selectedFiles.contains(file.name), dragItem: dragItem(for: file, in: directory),
                     canDrop: file.isDirectory ? { $0.canMove(to: dropDirectory(for: file, in: directory),
                                                              profileID: tab.profile.id) } : nil,
                     onDrop: file.isDirectory ? { tab.moveRemoteItem(from: $0.path,
@@ -485,6 +508,7 @@ struct ConnectionPane: View {
         if isRenaming(file, in: directory) {
             TextField("文件名", text: $renameName)
                 .textFieldStyle(.plain)
+                .tint(Color(red: 0.03, green: 0.28, blue: 0.70))
                 .focused($renameFocused)
                 .onSubmit { commitRename() }
                 .onExitCommand { cancelRename() }
@@ -616,7 +640,7 @@ struct ConnectionPane: View {
 
     private func selectForAction(_ file: RemoteFile, columnIndex: Int?) {
         if let columnIndex { tab.selectColumnFile(file, at: columnIndex) }
-        else { tab.selectedFile = file.name }
+        else { tab.selectFile(file, among: fileSort.files(tab.files), extending: false) }
     }
 
     private func open(_ file: RemoteFile) {
@@ -731,8 +755,30 @@ struct ConnectionPane: View {
     }
 
     private func downloadSelected() {
-        guard let selected = tab.selectedFile, let file = tab.files.first(where: { $0.name == selected }) else { return }
-        download(file)
+        let selected = selectedDownloadFiles
+        guard !selected.isEmpty else { return }
+        if selected.count == 1 {
+            download(selected[0])
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.message = "选择保存下载文件的文件夹"
+        panel.prompt = "下载到此文件夹"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        for file in selected {
+            tab.download(file, to: directory.appendingPathComponent(file.name))
+        }
+        showsTransfers = true
+    }
+
+    private var selectedDownloadFiles: [RemoteFile] {
+        fileSort.files(tab.files).filter {
+            !$0.isDirectory && tab.selectedFiles.contains($0.name)
+        }
     }
 
     private func download(_ file: RemoteFile) {

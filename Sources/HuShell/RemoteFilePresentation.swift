@@ -37,6 +37,17 @@ struct RemoteFileSort {
     }
 }
 
+enum RemoteFileSelection {
+    static func names(in files: [RemoteFile], anchor: String?, through name: String) -> Set<String> {
+        let names = files.filter { $0.name != ".." }.map(\.name)
+        guard let start = names.firstIndex(of: anchor ?? name),
+              let end = names.firstIndex(of: name) else {
+            return [name]
+        }
+        return Set(names[min(start, end)...max(start, end)])
+    }
+}
+
 enum RemoteFileDate {
     private static let months = ["Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
                                  "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12]

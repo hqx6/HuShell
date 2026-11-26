@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import HuShell
 
 final class RemoteFileTests: XCTestCase {
@@ -41,6 +42,69 @@ final class RemoteFileTests: XCTestCase {
         XCTAssertEqual(sort.files(files).map(\.name), ["backup", "large.txt", "medium file.txt", "small.txt"])
         sort.select(.modified)
         XCTAssertEqual(sort.files(files).map(\.name), ["backup", "small.txt", "medium file.txt", "large.txt"])
+    }
+
+    func testShiftSelectionUsesVisibleSortOrderAndKeepsOriginalAnchor() {
+        let files = [
+            RemoteFile(name: "charlie.txt", isDirectory: false, size: "", modified: "", permissions: ""),
+            RemoteFile(name: "alpha", isDirectory: true, size: "", modified: "", permissions: ""),
+            RemoteFile(name: "bravo.txt", isDirectory: false, size: "", modified: "", permissions: "")
+        ]
+        let sorted = RemoteFileSort().files(files)
+        XCTAssertEqual(RemoteFileSelection.names(in: sorted, anchor: "alpha", through: "charlie.txt"),
+                       ["alpha", "bravo.txt", "charlie.txt"])
+        XCTAssertEqual(RemoteFileSelection.names(in: sorted, anchor: "charlie.txt", through: "alpha"),
+                       ["alpha", "bravo.txt", "charlie.txt"])
+    }
+
+    func testSelectedRowClickRenameWaitsForSingleClick() {
+        typealias ClickView = FileRowClickObserver.ClickView
+        XCTAssertTrue(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: []))
+        XCTAssertTrue(ClickView.shouldScheduleRename(isSelected: true, clickCount: 0, modifiers: []))
+        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: false, clickCount: 1, modifiers: []))
+        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 2, modifiers: []))
+        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.shift]))
+        XCTAssertFalse(ClickView.shouldScheduleRename(isSelected: true, clickCount: 1, modifiers: [.command]))
+    }
+
+    @MainActor func testSelectedRowStartsRenameAfterSingleClickDelay() async throws {
+        let view = FileRowClickObserver.ClickView(frame: .zero)
+        var renamed = false
+        view.isSelected = true
+        view.onSelect = { _ in true }
+        view.onRename = { renamed = true }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
+                                                     modifierFlags: [], timestamp: 0,
+                                                     windowNumber: 0, context: nil,
+                                                     eventNumber: 1, clickCount: 1, pressure: 0))
+
+        view.mouseDown(with: event)
+        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
+        XCTAssertTrue(renamed)
+    }
+
+    @MainActor func testSelectedRowDoubleClickCancelsRename() async throws {
+        let view = FileRowClickObserver.ClickView(frame: .zero)
+        var renamed = false
+        var opened = false
+        view.isSelected = true
+        view.onSelect = { _ in true }
+        view.onRename = { renamed = true }
+        view.onDoubleClick = { opened = true }
+        let first = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
+                                                     modifierFlags: [], timestamp: 0,
+                                                     windowNumber: 0, context: nil,
+                                                     eventNumber: 1, clickCount: 1, pressure: 0))
+        let second = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero,
+                                                      modifierFlags: [], timestamp: 0.1,
+                                                      windowNumber: 0, context: nil,
+                                                      eventNumber: 2, clickCount: 2, pressure: 0))
+
+        view.mouseDown(with: first)
+        view.mouseDown(with: second)
+        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
+        XCTAssertTrue(opened)
+        XCTAssertFalse(renamed)
     }
 
     func testLegacySFTPListingUsesFourDigitYearAndSeconds() throws {

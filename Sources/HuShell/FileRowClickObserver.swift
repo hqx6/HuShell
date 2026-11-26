@@ -15,28 +15,36 @@ struct RemoteFileDragItem: Codable {
 
 /// Native presses select immediately, without waiting for double-click recognition.
 struct FileRowClickObserver: NSViewRepresentable {
-    let onSelect: () -> Void
+    let onSelect: (NSEvent.ModifierFlags) -> Bool
     let onDoubleClick: () -> Void
+    var onRename: (() -> Void)? = nil
+    var isSelected = false
     var dragItem: RemoteFileDragItem? = nil
     var canDrop: ((RemoteFileDragItem) -> Bool)? = nil
     var onDrop: ((RemoteFileDragItem) -> Void)? = nil
 
     func makeNSView(context: Context) -> ClickView { ClickView() }
     func updateNSView(_ view: ClickView, context: Context) {
+        if view.isSelected != isSelected { view.cancelPendingRename() }
         view.onSelect = onSelect
         view.onDoubleClick = onDoubleClick
+        view.onRename = onRename
+        view.isSelected = isSelected
         view.dragItem = dragItem
         view.canDrop = canDrop
         view.onDrop = onDrop
     }
 
     final class ClickView: NSView, NSDraggingSource {
-        var onSelect: (() -> Void)?
+        var onSelect: ((NSEvent.ModifierFlags) -> Bool)?
         var onDoubleClick: (() -> Void)?
+        var onRename: (() -> Void)?
+        var isSelected = false
         var dragItem: RemoteFileDragItem?
         var canDrop: ((RemoteFileDragItem) -> Bool)?
         var onDrop: ((RemoteFileDragItem) -> Void)?
         private var dragging = false
+        private var pendingRename: DispatchWorkItem?
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -48,11 +56,26 @@ struct FileRowClickObserver: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             dragging = false
-            onSelect?()
-            if event.clickCount == 2 { onDoubleClick?() }
+            cancelPendingRename()
+            let wasSelected = onSelect?(event.modifierFlags) ?? false
+            if Self.shouldScheduleRename(isSelected: wasSelected,
+                                         clickCount: event.clickCount,
+                                         modifiers: event.modifierFlags) {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.pendingRename = nil
+                    self?.onRename?()
+                }
+                pendingRename = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval,
+                                              execute: work)
+            } else if event.clickCount == 2 {
+                cancelPendingRename()
+                onDoubleClick?()
+            }
         }
 
         override func mouseDragged(with event: NSEvent) {
+            cancelPendingRename()
             guard !dragging, let dragItem,
                   let data = try? JSONEncoder().encode(dragItem),
                   let value = String(data: data, encoding: .utf8) else { return }
@@ -85,6 +108,17 @@ struct FileRowClickObserver: NSViewRepresentable {
             guard let item = decodedItem(from: sender), canDrop?(item) == true else { return false }
             onDrop?(item)
             return true
+        }
+
+        func cancelPendingRename() {
+            pendingRename?.cancel()
+            pendingRename = nil
+        }
+
+        static func shouldScheduleRename(isSelected: Bool, clickCount: Int,
+                                         modifiers: NSEvent.ModifierFlags) -> Bool {
+            let disallowed: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+            return isSelected && clickCount <= 1 && modifiers.intersection(disallowed).isEmpty
         }
 
         private func decodedItem(from sender: NSDraggingInfo) -> RemoteFileDragItem? {

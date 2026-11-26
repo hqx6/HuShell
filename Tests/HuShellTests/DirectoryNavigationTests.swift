@@ -152,4 +152,33 @@ final class DirectoryNavigationTests: XCTestCase {
         await waitUntil { !tab.busy }
         XCTAssertEqual(tab.files.first?.name, "reconnected")
     }
+
+    @MainActor func testShiftSelectionSupportsFilesAndFoldersInListAndColumnViews() {
+        let tab = ConnectionTab(profile: ConnectionProfile(name: "test", host: "localhost", username: "test"),
+                                transferCenter: TransferCenter(),
+                                directoryLoader: { _, _ in [] })
+        let files = [
+            RemoteFile(name: "zeta.txt", isDirectory: false, size: "", modified: "", permissions: ""),
+            RemoteFile(name: "folder", isDirectory: true, size: "", modified: "", permissions: ""),
+            RemoteFile(name: "alpha.txt", isDirectory: false, size: "", modified: "", permissions: "")
+        ]
+        let sorted = RemoteFileSort().files(files)
+        tab.files = files
+
+        tab.selectFile(sorted[0], among: sorted, extending: false)
+        tab.selectFile(sorted[2], among: sorted, extending: true)
+        XCTAssertEqual(tab.selectedFiles, ["alpha.txt", "folder", "zeta.txt"])
+        XCTAssertEqual(tab.selectedFile, "zeta.txt")
+
+        tab.selectFile(sorted[0], among: sorted, extending: false)
+        tab.selectFile(sorted[1], among: sorted, extending: true)
+        XCTAssertEqual(tab.selectedFiles, ["alpha.txt", "folder"])
+
+        tab.columns = [RemoteColumn(path: "/", files: files, selectedName: "folder",
+                                    selectedNames: ["folder"], selectionAnchor: "folder")]
+        tab.selectColumnItem(sorted.last!, at: 0, among: sorted, extending: true)
+        XCTAssertEqual(tab.columns[0].selectedNames, ["alpha.txt", "folder", "zeta.txt"])
+        XCTAssertEqual(tab.selectedFiles, ["alpha.txt", "folder", "zeta.txt"])
+        XCTAssertEqual(tab.directory, "/")
+    }
 }

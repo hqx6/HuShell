@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 @main struct HuShellApp: App {
+    @NSApplicationDelegateAdaptor(HuShellAppDelegate.self) private var appDelegate
     @StateObject private var store = ProfileStore()
 
     init() {
@@ -22,16 +23,48 @@ import AppKit
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "workspace") {
             WorkspaceView(store: store)
                 .frame(minWidth: 960, minHeight: 620)
                 .background(WindowZoomView().frame(width: 0, height: 0))
         }
         .windowStyle(.titleBar)
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            WindowCommands()
             ConnectionCommands(store: store)
             TerminalCommands()
+        }
+    }
+}
+
+private struct WindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新建窗口") { openWindow(id: "workspace") }
+                .keyboardShortcut("n")
+        }
+    }
+}
+
+final class HuShellAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { restoreMainWindow(in: sender) }
+        return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard let app = notification.object as? NSApplication else { return }
+        DispatchQueue.main.async { self.restoreMainWindow(in: app) }
+    }
+
+    private func restoreMainWindow(in app: NSApplication) {
+        guard !app.windows.contains(where: { $0.isVisible && !$0.isMiniaturized }) else { return }
+        if let window = app.windows.first(where: { $0.canBecomeKey }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            app.sendAction(#selector(NSWindow.newWindowForTab(_:)), to: nil, from: nil)
         }
     }
 }
